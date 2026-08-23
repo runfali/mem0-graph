@@ -1310,9 +1310,10 @@ class Memory(MemoryBase):
                         "role": message_dict["role"],
                     }
                 )
-            for item in returned_memories:
-                if item.get("event") == "ADD" and item.get("id"):
-                    self._notify_memory_added(item["id"])
+            # NOTE: do not fire _notify_memory_added here. The outer add()
+            # pipeline is the single trigger point for the on_memory_added
+            # callback; firing it here too caused double notifications on
+            # the non-infer path.
             return returned_memories
 
         # === V3 PHASED BATCH PIPELINE ===
@@ -3633,9 +3634,10 @@ class AsyncMemory(MemoryBase):
                         "role": message_dict["role"],
                     }
                 )
-            for item in returned_memories:
-                if item.get("event") == "ADD" and item.get("id"):
-                    self._notify_memory_added(item["id"])
+            # NOTE: do not fire _notify_memory_added here. The outer add()
+            # pipeline is the single trigger point for the on_memory_added
+            # callback; firing it here too caused double notifications on
+            # the non-infer path.
             return returned_memories
 
         # === V3 PHASED BATCH PIPELINE (async) ===
