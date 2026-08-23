@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
       { key: "apiKey", type: "text" },
       { key: "userId", type: "text" },
       { key: "agentId", type: "text" },
+      { key: "forceRecallStep", type: "bool" },
       { key: "topK", type: "number" },
       { key: "rerank", type: "bool" },
       { key: "recallEnabled", type: "bool" },
@@ -285,6 +286,8 @@ window.__ModuleLoader__.load({
       "hint.userId": "记忆归属的用户 ID；跨会话共享同一份记忆",
       "field.agentId": "智能体标识（agent_id）",
       "hint.agentId": "写入时附带的 agent_id，便于按来源过滤",
+      "field.forceRecallStep": "第一步强制搜索提醒",
+      "hint.forceRecallStep": "每轮第一步注入『必须先调 mem0_search』提醒（琐碎轮跳过）；配合 usage 引导让『先搜再答』成为每轮流程，默认开启",
       "field.topK": "搜索条数上限（top_k）",
       "hint.topK": "每次召回返回的最大条数，1–50，默认 10",
       "field.rerank": "搜索重排（rerank）",
@@ -354,7 +357,7 @@ window.__ModuleLoader__.load({
 
     const GROUPS = [
       { titleKey: "group.connection", keys: ["enabled", "host", "apiKey", "userId", "agentId"] },
-      { titleKey: "group.recall", keys: ["recallEnabled", "recallWaitMs", "topK", "rerank", "distillEnabled", "distillMinChars", "distillInputMaxChars", "distillBaseUrl", "distillApiKey", "distillModel", "distillTimeoutMs", "distillRetryAfterMs"] },
+      { titleKey: "group.recall", keys: ["forceRecallStep", "topK", "rerank", "distillEnabled", "distillMinChars", "distillInputMaxChars", "distillBaseUrl", "distillApiKey", "distillModel", "distillTimeoutMs", "distillRetryAfterMs"] },
       { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars", "feedbackEnabled"] },
       { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] }
     ];

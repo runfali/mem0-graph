@@ -21,6 +21,7 @@
  */
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { isTrivialPrompt } from './guards.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
@@ -42,6 +43,7 @@ export const Config = z.object({
   apiKey: z.string().default(''),
   userId: z.string().default('dsh-user'),
   agentId: z.string().default('dsh'),
+  forceRecallStep: z.boolean().default(true),
   topK: z.number().step(1).min(1).max(50).default(10),
   rerank: z.boolean().default(false),
   distillEnabled: z.boolean().default(true),
@@ -67,6 +69,13 @@ export const Config = z.object({
 })
 
 const METADATA_CHANNEL = 'dsh'
+
+/** 第一步强制搜索提醒（方案 B）：注入为 plugin-source 用户消息，随本轮进入模型上下文。 */
+const RECALL_REMINDER = (
+  '[mem0 requirement] This step MUST call mem0_search before producing any final answer. ' +
+  'Run one or several searches with different wording as needed, then answer using the ' +
+  'recalled memories together with your own knowledge. Do not skip the search.'
+)
 
 /** 数值防御性收敛（外部编辑 settings.yaml 时兜底）。 */
 function clampInt(value, min, max, fallback) {
@@ -125,6 +134,7 @@ export function apply(ctx, config = {}) {
       apiKey: String(value.apiKey || '').trim(),
       userId: String(value.userId || '').trim() || 'dsh-user',
       agentId: String(value.agentId || '').trim() || 'dsh',
+      forceRecallStep: value.forceRecallStep !== false,
       topK: clampInt(value.topK, 1, 50, 10),
       rerank: value.rerank === true,
       distillEnabled: value.distillEnabled !== false,
@@ -186,6 +196,27 @@ export function apply(ctx, config = {}) {
         }
       } catch (error) {
         log.debug('claimed capture failed: ' + String((error && error.message) || error))
+      }
+    })
+    agent.ctx.on('agent/pre-step', async (payload, next) => {
+      try {
+        const decision = await next()
+        if (!decision || decision.kind !== 'enter' || !decision.messages) return decision
+        const s = spec()
+        if (!s.enabled || !s.host) return decision
+        if (s.forceRecallStep !== true) return decision
+        if (payload.step !== 0) return decision // 每轮只在第一步提醒
+        const firstText = textOfBlocks(payload.messages && payload.messages[0] && payload.messages[0].content)
+        if (isTrivialPrompt(firstText)) return decision // 琐碎轮（问候/确认）不打扰
+        const reminder = {
+          role: 'user',
+          content: [{ type: 'text', text: RECALL_REMINDER }],
+          source: { kind: 'plugin', plugin: 'dsh-mem0-plugins' }
+        }
+        return { kind: 'enter', messages: [...decision.messages, reminder] }
+      } catch (error) {
+        log.debug('recall reminder injection failed: ' + String((error && error.message) || error))
+        return next()
       }
     })
     agent.ctx.on('agent/turn-stopping', (stopping) => {

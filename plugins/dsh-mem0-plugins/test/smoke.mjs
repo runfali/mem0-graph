@@ -321,6 +321,35 @@ console.log('== 显式关闭(enabled=false)时工具给出明确指引 ==')
   env.setScope({ ...env.getScope(), enabled: true }) // 恢复启用态，避免污染后续用例
 }
 
+console.log('== 第一步强制搜索提醒 ==')
+{
+  const [agentM] = await spawnAll(['sess-M'])
+  const preSteps = agentM.listeners.get('agent/pre-step') || []
+  assert.ok(preSteps.length >= 1, 'pre-step 监听未注册'); ok('pre-step 监听注册于 agent ctx')
+  const nextBase = async () => ({ kind: 'enter', messages: [{ role: 'user', content: [{ type: 'text', text: '原始问题' }], source: { kind: 'user' } }] })
+
+  // 第一步 + 非琐碎 → 注入提醒
+  const d1 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '我的记忆里有部署信息吗' }] }], turn: 1, step: 0, signal: null }, nextBase)
+  assert.equal(d1.kind, 'enter')
+  assert.equal(d1.messages.length, 2); ok('第一步注入提醒消息')
+  assert.equal(d1.messages[1].source.kind, 'plugin'); ok('提醒为 plugin-source（不写入记忆、UI 系统样式）')
+  assert.match(d1.messages[1].content[0].text, /mem0_search/); ok('提醒文本包含 mem0_search 指令')
+
+  // 同一轮后续步 → 不重复提醒
+  const d2 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '继续' }] }], turn: 1, step: 1, signal: null }, nextBase)
+  assert.equal(d2.messages.length, 1); ok('step>0 不重复提醒')
+
+  // 琐碎输入 → 跳过提醒
+  const d3 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '好的' }] }], turn: 2, step: 0, signal: null }, nextBase)
+  assert.equal(d3.messages.length, 1); ok('琐碎轮（好的）不打扰')
+
+  // 开关关闭 → 不注入
+  env.setScope({ ...env.getScope(), forceRecallStep: false })
+  const d4 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '查一下端口' }] }], turn: 3, step: 0, signal: null }, nextBase)
+  assert.equal(d4.messages.length, 1); ok('forceRecallStep=off 不注入')
+  env.setScope({ ...env.getScope(), forceRecallStep: true })
+}
+
 console.log('== 启用后：写入链路 ==')
 {
   const [agentW] = await spawnAll(['sess-W'])

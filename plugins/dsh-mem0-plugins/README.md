@@ -57,6 +57,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
+| `forceRecallStep` | `true` | **方案 B**：每轮第一步注入『必须先调 mem0_search』提醒（琐碎轮跳过，plugin-source 显示为系统注记不写记忆）；关闭则只靠 usage 引导 |
 | `topK` | `10` | 每次召回最大条数（1–50） |
 | `rerank` | `false` | 开启则以全深度模式请求重排（服务端需配置 reranker） |
 | `distillEnabled` | `true` | 长文本查询蒸馏总开关（见下方「查询蒸馏」） |
@@ -104,7 +105,10 @@ dsh plugin --profile web remove dsh-mem0-plugins
 
 - **显式工具链路**：不做后台静默预取（dsh 平台在消息回显后无内容注入钩子，
   详见 `docs/COMPARISON.md` 平台时序约束）；模型按 usage 引导先调 `mem0_search`，
-  工具卡让「召回中」对用户可见，蒸馏/超时/熔断全套在工具内部生效。
+  工具卡让「召回中」对用户可见，蒸馏/超时/熔断全套在工具内部生效；
+- **第一步强制提醒（方案 B，默认开）**：每轮第一步经 `agent/pre-step` 注入
+  plugin-source 提醒「必须先调 mem0_search」（UI 系统注记、不写记忆、琐碎轮跳过、
+  开关 `forceRecallStep` 可关）——把「先搜再答」从模型自觉升级为流程默认。
 - **琐碎输入跳过**（`src/guards.js`，词表扩充成果保留，暂作复用库）：纯问候/确认/
   斜杠命令词表三分类等价，只整串匹配、带正文永不误伤；
 - **中断轮不入记忆**：被打断的半截回复不会写进 mem0（部分输出不是持久对话真相，
