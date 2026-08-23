@@ -60,6 +60,19 @@ export class CircuitBreaker {
   }
 }
 
+/**
+ * 熔断器热调：应用新阈值/冷却；熔断已打开时按新冷却重算窗口，
+ * 让设置页的「即时生效」语义对已打开的窗口同样成立。
+ */
+export function retuneBreaker(breaker, threshold, cooldownMs) {
+  breaker.threshold = threshold;
+  breaker.cooldownMs = cooldownMs;
+  if (breaker.openUntil > 0 && breaker.consecutiveFailures >= breaker.threshold) {
+    const newUntil = Date.now() + breaker.cooldownMs;
+    if (newUntil < breaker.openUntil) breaker.openUntil = newUntil;
+  }
+}
+
 /** 带状态码的 HTTP 错误，供调用方区分客户端错误与服务端故障。 */
 export class Mem0HttpError extends Error {
   constructor(status, path, body) {

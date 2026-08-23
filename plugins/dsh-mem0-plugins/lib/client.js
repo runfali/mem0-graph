@@ -65,7 +65,7 @@ window.__ModuleLoader__.load({
       if (text === "") return { cleared: true };
       if (field.type === "number") {
         const n = Number(text);
-        if (!Number.isFinite(n)) return { invalid: true };
+        if (!Number.isFinite(n)) return { invalid: true, raw: text };
         return { value: Math.trunc(n) };
       }
       return { value: text };
@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
       this.saving = false;
       this.failed = false;
       const self = this;
-      this._unsubscribe = scope.subscribe(() => { self.publish(); });
+      // scope 订阅由宿主的 ctx.effect 托管（apply 侧），插件卸载时自动退订
       this.store = createStore(this.projection());
       this.listeners.add(() => { this.store.set(this.projection()); });
     }
@@ -113,7 +113,7 @@ window.__ModuleLoader__.load({
         return { stagedText: "", stagedBool: false, overridden: true, invalid: false };
       }
       return {
-        stagedText: field.type === "bool" ? undefined : String(staged.value),
+        stagedText: field.type === "bool" ? undefined : (staged.invalid === true ? staged.raw : String(staged.value)),
         stagedBool: field.type === "bool" ? staged.value === true : undefined,
         overridden: true,
         invalid: staged.invalid === true
@@ -139,7 +139,10 @@ window.__ModuleLoader__.load({
           }) });
           return;
         }
-        if (String(this.sectionValue(key)) === String(staged.value)) return;
+        const section = this.sectionValue(key);
+        if (section === undefined || section === null) {
+          if (staged.value === "" ) return;
+        } else if (String(section) === String(staged.value)) return;
         plan.push({ key, run: () => this.scope.set(key, staged.value).then(() => {
           const user = this.userLayer();
           return user !== undefined && user !== null && user[key] === staged.value;
@@ -200,12 +203,23 @@ window.__ModuleLoader__.load({
           self.saving = true;
           self.failed = false;
           self.publish();
+          // 快照本次计划涉及的键（引用级）：保存(可能长达 requestTimeoutMs=300s)
+          // 期间用户的并发编辑会替换 staged 里的对象——引用变化即保留，绝不静默丢输入
+          const planned = [];
+          plan.forEach((item) => {
+            const ref = self.staged.get(item.key);
+            if (ref !== undefined) planned.push([item.key, ref]);
+          });
           let landed = true;
           for (let i = 0; i < runs.length; i += 1) {
             const okRun = await runs[i]();
             if (!okRun) landed = false;
           }
-          if (landed) self.staged.clear();
+          if (landed) {
+            for (const [key, ref] of planned) {
+              if (self.staged.get(key) === ref) self.staged.delete(key);
+            }
+          }
           self.saving = false;
           self.failed = !landed;
           self.publish();
@@ -440,6 +454,7 @@ window.__ModuleLoader__.load({
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), "dsh-mem0-plugins: dictionaries");
       const scope = ctx.settingsScope.bind({ namespace: NS });
       const form = new Mem0Form(scope);
+      ctx.effect(() => scope.subscribe(() => form.publish()), "dsh-mem0-plugins: scope-follow");
       ctx.slots.inject("settings.plugin.item", function* () {
         yield ctx.slots.register({
           name: "settings.plugin.item",

@@ -94,19 +94,24 @@ function makeScope(namespace) {
   }
   const listeners = new Set()
   const writes = []
-  return {
+  const defaultImpl = async (k, v) => {
+    writes.push([k, v])
+    // 模拟宿主 settingsScope.set 的副作用：镜像快照 user 层出现新值
+    snapshotValue.user = { ...(snapshotValue.user || {}), [k]: v }
+    listeners.forEach((fn) => fn())
+    return true
+  }
+  let setImpl = defaultImpl
+  const scope = {
     getSnapshot: () => snapshotValue,
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn) },
-    set: async (k, v) => {
-      writes.push([k, v])
-      // 模拟宿主 settingsScope.set 的副作用：镜像快照 user 层出现新值
-      snapshotValue.user = { ...(snapshotValue.user || {}), [k]: v }
-      listeners.forEach((fn) => fn())
-      return true
-    },
+    set: (k, v) => setImpl(k, v),
     unset: async () => true,
-    writes
+    writes,
+    set0: defaultImpl,
+    overrideSet: (impl) => { setImpl = impl }
   }
+  return scope
 }
 
 let lastScope = null
@@ -176,5 +181,36 @@ console.log('== 表单 save 流程（真链） ==')
 }
 
 
+
+console.log('== 审计回归：invalid 原文与保存期并发编辑 ==')
+{
+  // 1. 非法数字编辑：输入框必须显示用户原文，绝不显示 "undefined"
+  injected.edit('topK', 'abc')
+  let snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.topK.stagedText, 'abc'); ok('非法数字暂存显示原文')
+  assert.equal(snap.topK.invalid, true); ok('非法数字标记 invalid')
+  injected.discard()
+
+  // 2. 保存(挂起)期间并发编辑同一字段：完成后该编辑必须保留
+  let release
+  const gate = new Promise((r) => { release = r })
+  let saveDone = false
+  lastScope.overrideSet(async (k, v) => {
+    await gate // 挂起直到测试放行
+    return lastScope.set0(k, v)
+  })
+  injected.edit('topK', '88')
+  const savePromise = injected.save().then(() => { saveDone = true })
+  // 保存挂起中并发编辑
+  injected.edit('topK', '99')
+  release()
+  await savePromise
+  snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.topK.stagedText, '99'); ok('保存期并发编辑保留（引用级删除）')
+  assert.equal(snap.shell.dirty, true); ok('并发编辑后仍标记未保存')
+  assert.ok(lastScope.writes.some(([k, v]) => k === 'topK' && v === 88), '保存确实写了 topK'); ok('保存写入发生')
+  injected.discard()
+  lastScope.overrideSet(null)
+}
 
 console.log('\n全部通过：' + PASS.length + ' 项 ✓')

@@ -18,7 +18,7 @@
 import z from '@deepseek-ai/schemastery'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { CircuitBreaker, Mem0Client, isClientError } from './backend.js'
+import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
 import { distillQuery } from './distill.js'
 import { isTrivialPrompt } from './guards.js'
@@ -83,8 +83,21 @@ function textOfBlocks(blocks) {
     .trim()
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms, signal) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort)
+      resolve(null)
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve(null)
+    }
+    if (signal) {
+      if (signal.aborted === true) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+  })
 }
 
 /** 工具统一输出形状：{ok:true,data} | {ok:false,error}——单一 schema 可校验。 */
@@ -160,8 +173,7 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => ctx.on('settings/updated', (ns) => {
     if (ns !== MEM0_SETTINGS_NAMESPACE) return
     const s = spec()
-    breaker.threshold = s.breakerThreshold
-    breaker.cooldownMs = s.breakerCooldownMs
+    retuneBreaker(breaker, s.breakerThreshold, s.breakerCooldownMs)
   }), 'mem0:breaker-tuning')
 
   const ready = (s) => {
@@ -193,7 +205,8 @@ export function apply(ctx, config = {}) {
         timeoutMs: s.distillTimeoutMs,
         retryAfterMs: s.distillRetryAfterMs
       }, (info) => log.debug(info))
-      return clientFor(s).search({ query: distilled, filters: { user_id: s.userId }, topK: s.topK, rerank: s.rerank })
+      const latest = spec() // 蒸馏可能耗时 90s，期间配置或已热改——以最新为准
+      return clientFor(latest).search({ query: distilled, filters: { user_id: latest.userId }, topK: latest.topK, rerank: latest.rerank })
     })()
       .then((results) => {
         const lines = (results || [])
@@ -208,27 +221,58 @@ export function apply(ctx, config = {}) {
     pendingRecall.set(sessionId, { query, promise })
   }
 
-  ctx.effect(() => ctx.on('agent/inbox/claimed', (payload) => {
-    try {
-      const s = spec()
-      // 无论召回是否开启，都按 (sessionId, turn) 记录真人输入文本，
-      // 供 turn-stopping 配对——并发多轮时避免 A 轮被 B 轮的 user 覆盖
-      const claimedText = textOfBlocks(payload.message && payload.message.content)
-      if (claimedText) {
-        userByTurn.set(payload.agent.id + '\u0000' + payload.turn, claimedText)
-        capMap(userByTurn)
-      }
-      if (!s.enabled || !s.recallEnabled || !s.host) return
-      if (breaker.open) return
-      if (!claimedText || claimedText.length < 2) return
-      // 琐碎输入（问候/确认/斜杠命令）不值得召回——对齐 hermes is_trivial_prompt
-      if (isTrivialPrompt(claimedText)) return
-      startPrefetch(payload.agent.id, claimedText)
-    } catch (error) {
-      log.debug('prefetch setup failed: ' + String((error && error.message) || error))
+  // 全局监听 agent/created（载荷带 agent，实测确认），在 agent 级 scoped ctx 上注册
+  // claimed/turn-stopping——这两个事件的运行时载荷仅有 {message,turn}/{turn,signal}，
+  // 没有 agent 字段（dsh-agent-loop emit 实现与 .d.ts 声明漂移），会话标识从闭包拿。
+  ctx.effect(() => ctx.on('agent/created', (payload) => {
+    const agent = payload && payload.agent
+    if (!agent || !agent.id || !agent.ctx) {
+      log.debug('agent/created without usable agent, skipping mem0 hooks')
+      return
     }
-  }), 'mem0:prefetch-listener')
-
+    // 不变量：Agent.id 就是 Session.id（dsh-agent runtime-types：single identity shared with session）
+    const sessionId = agent.id
+    agent.ctx.on('agent/inbox/claimed', (claimed) => {
+      try {
+        const s = spec()
+        const claimedText = textOfBlocks(claimed.message && claimed.message.content)
+        if (claimedText) {
+          userByTurn.set(sessionId + '\u0000' + claimed.turn, claimedText)
+          capMap(userByTurn)
+        }
+        if (!s.enabled || !s.recallEnabled || !s.host) return
+        if (breaker.open) return
+        if (!claimedText || claimedText.length < 2) return
+        if (isTrivialPrompt(claimedText)) return
+        startPrefetch(sessionId, claimedText)
+      } catch (error) {
+        log.debug('prefetch setup failed: ' + String((error && error.message) || error))
+      }
+    })
+    agent.ctx.on('agent/turn-stopping', (stopping) => {
+      try {
+        const s = spec()
+        const userTurnKey = sessionId + '\u0000' + stopping.turn
+        const userText = userByTurn.get(userTurnKey) || lastUserBySession.get(sessionId) || ''
+        const assistantEntry = lastAssistantByTurn.get(userTurnKey)
+        const assistantText = assistantEntry ? assistantEntry.text : ''
+        const interrupted = assistantEntry ? assistantEntry.interrupted === true : false
+        lastUserBySession.delete(sessionId)
+        userByTurn.delete(userTurnKey)
+        lastAssistantByTurn.delete(userTurnKey)
+        if (!s.enabled || !s.syncEnabled || !s.host) return
+        if (interrupted) {
+          log.debug('turn interrupted, skipping memory sync for session ' + sessionId)
+          return
+        }
+        if (!userText && !assistantText) return
+        if (breaker.open) return
+        coalescer.enqueue({ userId: s.userId, sessionId, userContent: userText, assistantContent: assistantText })
+      } catch (error) {
+        log.debug('enqueue failed: ' + String((error && error.message) || error))
+      }
+    })
+  }), 'mem0:agent-hooks')
   ctx.effect(() => ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     try {
       const agent = context && context.agent
@@ -239,7 +283,7 @@ export function apply(ctx, config = {}) {
           pendingRecall.delete(agent.id)
           const winner = await Promise.race([
             pending.promise.then((text) => ({ text })),
-            sleep(s.recallWaitMs).then(() => null)
+            sleep(s.recallWaitMs, context.signal)
           ])
           const recalled = winner ? winner.text : ''
           if (recalled) {
@@ -298,6 +342,8 @@ export function apply(ctx, config = {}) {
     while (map.size > CAP_LIMIT) map.delete(map.keys().next().value)
   }
 
+  // 不变量：Agent.id === session.id（dsh-agent 单一身份）；此监听以 session.id 写键，
+  // 与 agent/created 闭包里的 sessionId（=agent.id）同源，配对必然命中。
   ctx.effect(() => ctx.on('session/event', (session, event) => {
     try {
       if (event.type === 'user/message') {
@@ -324,33 +370,6 @@ export function apply(ctx, config = {}) {
       log.debug('capture failed: ' + String((error && error.message) || error))
     }
   }), 'mem0:capture-listener')
-
-  ctx.effect(() => ctx.on('agent/turn-stopping', (payload) => {
-    try {
-      const s = spec()
-      const sessionId = payload.agent.id
-      const userTurnKey = sessionId + '\u0000' + payload.turn
-      const userText = userByTurn.get(userTurnKey) || lastUserBySession.get(sessionId) || ''
-      const assistantKey = userTurnKey
-      const assistantEntry = lastAssistantByTurn.get(assistantKey)
-      const assistantText = assistantEntry ? assistantEntry.text : ''
-      const interrupted = assistantEntry ? assistantEntry.interrupted === true : false
-      lastUserBySession.delete(sessionId)
-      userByTurn.delete(userTurnKey)
-      lastAssistantByTurn.delete(assistantKey)
-      if (!s.enabled || !s.syncEnabled || !s.host) return
-      // 中断的轮次整体不入记忆：部分输出会污染未来召回
-      if (interrupted) {
-        log.debug('turn interrupted, skipping memory sync for session ' + sessionId)
-        return
-      }
-      if (!userText && !assistantText) return
-      if (breaker.open) return
-      coalescer.enqueue({ userId: s.userId, sessionId, userContent: userText, assistantContent: assistantText })
-    } catch (error) {
-      log.debug('enqueue failed: ' + String((error && error.message) || error))
-    }
-  }), 'mem0:sync-listener')
 
   // 冲刷节拍：排空队列 → 冲刷到期桶；dispose 时 clearInterval + 兜底冲刷全部桶
   ctx.effect(() => {
@@ -530,6 +549,8 @@ export function apply(ctx, config = {}) {
         }
         return toolOk(result.result || 'Memory updated.')
       } catch (error) {
+        if (error && error.status === 404) return toolFail('Memory not found: ' + args.memory_id)
+        if (error && error.status === 400) return toolFail('Mem0 rejected the request: ' + String(error.message || ''))
         if (isClientError(error)) return toolFail('Memory not found: ' + args.memory_id)
         return toolFail(error)
       }
@@ -559,6 +580,8 @@ export function apply(ctx, config = {}) {
         }
         return toolOk(result.result || 'Memory deleted.')
       } catch (error) {
+        if (error && error.status === 404) return toolFail('Memory not found: ' + args.memory_id)
+        if (error && error.status === 400) return toolFail('Mem0 rejected the request: ' + String(error.message || ''))
         if (isClientError(error)) return toolFail('Memory not found: ' + args.memory_id)
         return toolFail(error)
       }

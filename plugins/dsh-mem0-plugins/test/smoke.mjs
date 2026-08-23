@@ -16,7 +16,7 @@
  */
 import assert from 'node:assert/strict'
 import { apply, Config, MEM0_SETTINGS_NAMESPACE } from '../src/index.js'
-import { CircuitBreaker, Mem0HttpError, isClientError } from '../src/backend.js'
+import { CircuitBreaker, Mem0HttpError, isClientError, retuneBreaker } from '../src/backend.js'
 import { looksLikeJson, sanitizeJsonMessage } from '../src/coalesce.js'
 import { distillQuery } from '../src/distill.js'
 import { isTrivialPrompt } from '../src/guards.js'
@@ -56,8 +56,14 @@ globalThis.fetch = async (url, init = {}) => {
     if (!body.user_id && !body.agent_id) return jsonResponse(400, { detail: 'identifier required' })
     return jsonResponse(200, addResponse)
   }
-  if (path.startsWith('/memories/') && init.method === 'PUT') return jsonResponse(200, {})
-  if (path.startsWith('/memories/') && init.method === 'DELETE') return jsonResponse(200, {})
+  if (path.startsWith('/memories/') && init.method === 'PUT') {
+    if (String(init.body || '').includes('BAD400')) return jsonResponse(400, { detail: 'memory text too long' })
+    return jsonResponse(200, {})
+  }
+  if (path.startsWith('/memories/') && init.method === 'DELETE') {
+    if (path.includes('not-exist')) return jsonResponse(404, { detail: 'Memory not found: not-exist' })
+    return jsonResponse(200, {})
+  }
   if (path === '/evolve/feedback') return jsonResponse(200, { memory_id: 'x', salience_score: 0.5 })
   return jsonResponse(404, { detail: 'no route' })
 }
@@ -116,7 +122,30 @@ function makeCtx(config) {
       }
     },
     tools: { register: (def) => tools.push(def) },
-    systemPrompt: { section: (def) => sections.push(def) }
+    systemPrompt: { section: (def) => sections.push(def) },
+    // agent 级 scoped ctx 工厂：真实环境 agent.ctx.on 只收本 agent 事件
+    agentCtxs: [],
+    createAgent(id) {
+      const actx = {
+        id,
+        ctx: null, // 自引用见下
+        listeners: new Map(),
+        fiber: { state: 0 },
+        logger: ctx.logger,
+        on(event, cb) {
+          if (!actx.listeners.has(event)) actx.listeners.set(event, [])
+          actx.listeners.get(event).push(cb)
+          return () => {
+            const arr = actx.listeners.get(event) || []
+            const i = arr.indexOf(cb)
+            if (i >= 0) arr.splice(i, 1)
+          }
+        }
+      }
+      actx.ctx = actx
+      ctx.agentCtxs.push(actx)
+      return actx
+    }
   }
   scopeValue = resolveConfigManually(Config, config)
   return { ctx, effects, listeners, tools, sections, setScope: (v) => { scopeValue = v }, getScope: () => scopeValue }
@@ -257,15 +286,29 @@ console.log('== 单元：琐碎输入守卫 ==')
 console.log('== Host apply 全链路 ==')
 const env = makeCtx({})
 apply(env.ctx, { host: 'http://mock:9999' })
+
+const emit = (event, ...args) => Promise.all((env.listeners.get(event) || []).map((cb) => cb(...args)))
+const emitOn = (actx, event, ...args) => Promise.all((actx.listeners.get(event) || []).map((cb) => cb(...args)))
+const spawn = (id) => { const a = env.ctx.createAgent(id); return a }
+const spawnAll = async (ids) => { const list = []; for (const id of ids) { const a = spawn(id); await emit('agent/created', { agent: a }); list.push(a) } return list }
+
 assert.equal(env.tools.length, 4); ok('注册四个工具（defineTool 真实编译通过）')
 assert.deepEqual(env.tools.map((t) => t.name), ['mem0_search', 'mem0_add', 'mem0_update', 'mem0_delete']); ok('工具名正确')
 assert.equal(env.sections.length, 1); ok('常驻使用说明节已注册')
-for (const ev of ['agent/inbox/claimed', 'system-prompt/assemble', 'session/event', 'agent/turn-stopping', 'settings/updated']) {
-  assert.ok(env.listeners.has(ev), ev + ' 监听缺失')
+for (const ev of ['agent/created', 'system-prompt/assemble', 'session/event', 'settings/updated']) {
+  assert.ok(env.listeners.has(ev), '全局监听缺失: ' + ev)
 }
-ok('五类事件监听全部挂载')
+ok('全局四类事件监听挂载（agent/created 驱动 scoped 注册）')
+// claimed/turn-stopping 现在注册在 agent 级 ctx（真实契约：载荷无 agent）
+{
+  const probe = env.ctx.createAgent('sess-Probe')
+  await emit('agent/created', { agent: probe })
+  assert.ok((probe.listeners.get('agent/inbox/claimed') || []).length >= 1, 'claimed 未注册到 agent ctx')
+  assert.ok((probe.listeners.get('agent/turn-stopping') || []).length >= 1, 'turn-stopping 未注册到 agent ctx')
+  ok('claimed/turn-stopping 注册于 agent 级 scoped ctx')
+}
 
-const emit = (event, ...args) => Promise.all((env.listeners.get(event) || []).map((cb) => cb(...args)))
+
 
 console.log('== 未配置(enabled=false)时工具给出明确指引 ==')
 {
@@ -279,29 +322,29 @@ console.log('== 未配置(enabled=false)时工具给出明确指引 ==')
 console.log('== 启用后：召回链路 ==')
 env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTimeoutMs: 5000 })
 {
-  const agent = { id: 'sess-A' }
-  await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: '我喜欢什么风格？' }] }, turn: 1 })
+  const [agentA] = await spawnAll(['sess-A'])
+  await emitOn(agentA, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '我喜欢什么风格？' }] }, turn: 1 })
   const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
   assert.ok(callsBefore >= 1, '预取搜索未发出'); ok('claimed 即发起后台 /search 预取')
 
   const assembly = { sections: [], contexts: [], tools: [] }
-  await emit('system-prompt/assemble', assembly, { agent }, async () => assembly)
+  await emit('system-prompt/assemble', assembly, { agent: { id: 'sess-A' } }, async () => assembly)
   const injected = assembly.sections.find((s) => s.name === 'mem0:recall')
   assert.ok(injected, '召回块未注入')
   assert.match(injected.text, /发哥偏好结论先行的短句回复/); ok('召回块注入并携带命中事实')
 
   // 同 turn 二次装配不再重复注入
   const assembly2 = { sections: [] }
-  await emit('system-prompt/assemble', assembly2, { agent }, async () => assembly2)
+  await emit('system-prompt/assemble', assembly2, { agent: { id: 'sess-A' } }, async () => assembly2)
   assert.equal(assembly2.sections.find((s) => s.name === 'mem0:recall'), undefined); ok('召回消费一次即清理')
 
   // 超长用户消息 → 蒸馏后的意图作为 /search query
   {
-    const longAgent = { id: 'sess-L' }
+    const [agentL] = await spawnAll(['sess-L'])
     const longText = '下面是我贴的服务器日志，帮我看看有没有问题：' + 'log line; '.repeat(120)
-    await emit('agent/inbox/claimed', { agent: longAgent, message: { content: [{ type: 'text', text: longText }] }, turn: 1 })
+    await emitOn(agentL, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: longText }] }, turn: 1 })
     const assembly = { sections: [] }
-    await emit('system-prompt/assemble', assembly, { agent: longAgent }, async () => assembly)
+    await emit('system-prompt/assemble', assembly, { agent: { id: 'sess-L' } }, async () => assembly)
     const searchCall = fetchCalls.filter((c) => c.path === '/search').at(-1)
     const sentQuery = JSON.parse(searchCall.body).query
     assert.equal(sentQuery, '部署端口配置'); ok('/search 收到的是蒸馏意图而非整段日志')
@@ -311,9 +354,9 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
   // 琐碎输入跳过预取
   {
     const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
-    const agent = { id: 'sess-T' }
-    await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: 'thanks!' }] }, turn: 1 })
-    await emit('system-prompt/assemble', { sections: [] }, { agent }, async () => ({ sections: [] }))
+    const [agentT] = await spawnAll(['sess-T'])
+    await emitOn(agentT, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: 'thanks!' }] }, turn: 1 })
+    await emit('system-prompt/assemble', { sections: [] }, { agent: { id: 'sess-T' } }, async () => ({ sections: [] }))
     assert.equal(fetchCalls.filter((c) => c.path === '/search').length, callsBefore); ok('琐碎输入零网络往返')
   }
 
@@ -324,12 +367,12 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
 
 console.log('== 启用后：写入链路 ==')
 {
-  const agent = { id: 'sess-W' }
+  const [agentW] = await spawnAll(['sess-W'])
   await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住：我的部署端口是 8888' }] } })
   await emit('session/event', { id: 'sess-W' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，记住了。' }] } })
   // 插件通知不应被当作用户输入
   await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: '文件变更通知' }] } })
-  await emit('agent/turn-stopping', { agent, turn: 1 })
+  await emitOn(agentW, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
 
   const memCallsBefore = fetchCalls.filter((c) => c.path === '/memories').length
   assert.ok(env.effects.some((e) => (e.label || '').includes('coalesce-tick')), '冲刷 tick 效果未注册'); ok('潮浪冲刷 tick 已挂载')
@@ -361,11 +404,11 @@ console.log('== 单元：有界队列丢最旧 ==')
 
 console.log('== 中断轮不入记忆 ==')
 {
-  const agent = { id: 'sess-I' }
+  const [agentI] = await spawnAll(['sess-I'])
   await emit('session/event', { id: 'sess-I' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '写一半被打断的问题' }] } })
   await emit('session/event', { id: 'sess-I' }, { type: 'assistant/message', turn: 1, interrupted: true, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '回答到一半就被用户中止了' }] } })
   const before = fetchCalls.filter((c) => c.path === '/memories').length
-  await emit('agent/turn-stopping', { agent, turn: 1 })
+  await emitOn(agentI, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
   env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })
   await new Promise((r) => setTimeout(r, 1300))
   const after = fetchCalls.filter((c) => c.path === '/memories').length
@@ -375,13 +418,13 @@ console.log('== 中断轮不入记忆 ==')
 
 console.log('== 并发轮 user 文本配对 ==')
 {
-  const agent = { id: 'sess-P' }
+  const [agentP] = await spawnAll(['sess-P'])
   // 两轮交错：turn1 claimed -> turn2 claimed -> turn1 结束 -> turn2 结束
-  await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: '第一轮的问题' }] }, turn: 1 })
-  await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: '第二轮的问题' }] }, turn: 2 })
+  await emitOn(agentP, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '第一轮的问题' }] }, turn: 1 })
+  await emitOn(agentP, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '第二轮的问题' }] }, turn: 2 })
   const memBefore = fetchCalls.filter((c) => c.path === '/memories').length
-  await emit('agent/turn-stopping', { agent, turn: 1 })
-  await emit('agent/turn-stopping', { agent, turn: 2 })
+  await emitOn(agentP, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
+  await emitOn(agentP, 'agent/turn-stopping', { turn: 2, signal: new AbortController().signal })
   await new Promise((r) => setTimeout(r, 1300))
   const bodies = fetchCalls.filter((c) => c.path === '/memories').map((c) => c.body || '')
   const joined = bodies.join('')
@@ -412,12 +455,37 @@ console.log('== 工具执行：add/update/delete ==')
   assert.equal(del.ok, true); ok('delete 成功')
 }
 
+console.log('== 客户端错误细分（400 不谎报 not found） ==')
+{
+  const [,, updateTool] = env.tools
+  const up = await updateTool.execute({ memory_id: 'm-9', text: 'BAD400' }, { signal: new AbortController().signal })
+  assert.equal(up.ok, false)
+  assert.match(up.error, /Mem0 rejected/); ok('400 透传服务端拒绝原因')
+  const [, , , deleteTool] = env.tools
+  const del = await deleteTool.execute({ memory_id: 'not-exist' }, { signal: new AbortController().signal })
+  assert.equal(del.ok, false)
+  assert.match(del.error, /Memory not found/); ok('404 仍报 not found')
+}
+
 console.log('== 网络失败重试与熔断 ==')
 {
   failNextNetwork = true
   const searchTool = env.tools[0]
   const result = await searchTool.execute({ query: '重试' }, { signal: new AbortController().signal })
   assert.equal(result.ok, true); ok('连接级失败自动重试一次后成功')
+
+  // breaker 热调：熔断打开时改小冷却 → 窗口立即缩短
+  const br2 = new CircuitBreaker({ threshold: 2, cooldownMs: 60000 })
+  br2.recordFailure(new Error('x')); br2.recordFailure(new Error('x'))
+  assert.equal(br2.open, true); ok('熔断已打开（前置条件）')
+  const oldUntil = br2.openUntil
+  retuneBreaker(br2, 2, 2000) // 等价于设置页改冷却触发的热调
+  assert.equal(br2.cooldownMs, 2000); ok('冷却参数热调生效')
+  assert.ok(br2.openUntil <= Date.now() + 2000 + 5 && br2.openUntil < oldUntil, '打开窗口未缩短'); ok('打开窗口按新冷却重算')
+  // 接线确认：settings/updated 监听确实应用 retuneBreaker（改 scope 后不抛且仍可用）
+  env.setScope({ ...env.getScope(), breakerThreshold: 2, breakerCooldownMs: 2000 })
+  await emit('settings/updated', MEM0_SETTINGS_NAMESPACE, {}, {}, 'test')
+  ok('settings/updated → retuneBreaker 接线无异常')
 }
 
 console.log('== dispose 兜底 ==')
