@@ -77,6 +77,16 @@
 3. **工具输出强契约**：defineTool output schema 编译期校验 + 结构化 `{ok,data,error}`；
 4. **可观测统计**：dropped/jsonSanitized/savedCalls 计数进日志，潮浪收益可见。
 
+## 七·五、契约漂移警戒（本插件踩过，供后续插件开发者）
+
+dsh 0.1.1-rc.2 实测：`agent/inbox/claimed` 运行时载荷为 `{message, turn}`、
+`agent/turn-stopping` 为 `{turn, signal}`——与 `dsh-agent/lib/types/runtime-types.d.ts`
+声明的 `{agent, message, turn}` / `{agent, turn, signal}` **不一致**（声明含 agent，
+emit 实现不含）。依赖声明会被静默吞掉（监听器 TypeError 被 try/catch 吃成 debug 日志）。
+规避：以 `agent/created`（载荷实测含 `{agent}`）闭包捕获 agent，在 agent 级 scoped ctx
+上注册子监听。教训：**插件开发一律以运行时 emit 实现为准，d.ts 仅作参考**；
+离线测试的 mock 载荷必须按实测形状构造，否则测试全绿真机全哑。
+
 ## 七、已知待办（记录不阻塞）
 
 - [ ] `describe_recall` 式「已召回 N 条」用户可见状态提示——等 DSH 前端 status 通道；
