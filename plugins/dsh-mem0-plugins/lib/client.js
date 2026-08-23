@@ -165,6 +165,17 @@ window.__ModuleLoader__.load({
       const shell = this.shell();
       const result = { shell };
       FIELDS.forEach((f) => { result[f.key] = this.field(f.key); });
+      // 衍生状态：供卡片头部展示「启用/未启用 + 服务地址」，一眼可判总算成败
+      const section = this.sectionValue;
+      const enabledField = this.field("enabled");
+      const hostField = this.field("host");
+      var enabledNow = false;
+      if (enabledField.stagedBool !== undefined) enabledNow = enabledField.stagedBool === true;
+      else enabledNow = section("enabled") === true;
+      result.status = {
+        enabled: enabledNow,
+        host: hostField.stagedText || ""
+      };
       return result;
     };
     Mem0Form.prototype.actions = function () {
@@ -247,6 +258,8 @@ window.__ModuleLoader__.load({
     const zh = {
       "card.title": "Mem0 记忆（dsh-mem0-plugins）",
       "card.description": "自托管 Mem0 持久记忆：自动召回相关记忆、自动合并写入对话事实，并提供 mem0_search/add/update/delete 工具。",
+      "card.statusOn": "已启用",
+      "card.statusOff": "未启用",
       "group.connection": "连接与身份",
       "group.recall": "自动召回",
       "group.sync": "自动写入",
@@ -324,6 +337,8 @@ window.__ModuleLoader__.load({
     const en = Object.assign({}, zh, {
       "card.title": "Mem0 memory (dsh-mem0-plugins)",
       "card.description": "Self-hosted Mem0 persistent memory: automatic recall injection, coalesced memory writes, and mem0_search/add/update/delete tools.",
+      "card.statusOn": "Enabled",
+      "card.statusOff": "Disabled",
       "unsaved": "Unsaved",
       "expand": "Expand",
       "collapse": "Collapse",
@@ -393,6 +408,7 @@ window.__ModuleLoader__.load({
       const open = pair[0];
       const setOpen = pair[1];
       const state = props.useMem0((snapshot) => snapshot.shell);
+      const status = props.useMem0((snapshot) => snapshot.status);
       const fields = props.useMem0((snapshot) => snapshot);
       const t = props.t;
       if (!state.available) return null;
@@ -408,7 +424,7 @@ window.__ModuleLoader__.load({
           children: [
             jsxs("span", { className: "M0pl_headText", children: [
               jsx("span", { className: "M0pl_name", children: t("card.title") }),
-              jsx("span", { className: "M0pl_description", children: t("card.description") })
+              jsx("span", { className: "M0pl_description", children: (status && status.enabled ? t("card.statusOn") : t("card.statusOff")) + (status && status.host ? " · " + status.host : "") })
             ] }),
             state.dirty ? jsx("span", { className: "M0pl_pending", children: t("unsaved") }) : null,
             jsx("svg", {
