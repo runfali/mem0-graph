@@ -292,7 +292,7 @@ window.__ModuleLoader__.load({
       "field.recallEnabled": "自动召回注入",
       "hint.recallEnabled": "每轮用户发言后台预取语义搜索，命中则注入系统提示",
       "field.recallWaitMs": "召回等待时间（毫秒）",
-      "hint.recallWaitMs": "提示词装配时等待预取结果的上限，默认 15000（对齐 hermes _PREFETCH_WAIT_SECS=15）；超时跳过本次注入",
+      "hint.recallWaitMs": "装配点等待预取结果的上限，默认 0=纯异步（消息立即落库显示、回复零延迟，召回靠 mem0_search 工具兜底）；调大则最多等待该毫秒后注入",
       "field.distillEnabled": "长文本查询蒸馏",
       "hint.distillEnabled": "超过阈值的用户消息先由小模型提炼成检索意图再搜索，防止长日志打爆服务端；失败自动回退原文",
       "field.distillMinChars": "蒸馏触发阈值（字符）",

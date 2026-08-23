@@ -42,7 +42,7 @@ export const Config = z.object({
   topK: z.number().step(1).min(1).max(50).default(10),
   rerank: z.boolean().default(false),
   recallEnabled: z.boolean().default(true),
-  recallWaitMs: z.number().step(1).min(0).max(120000).default(15000),
+  recallWaitMs: z.number().step(1).min(0).max(120000).default(0),
   distillEnabled: z.boolean().default(true),
   distillMinChars: z.number().step(1).min(1).max(100000).default(500),
   distillInputMaxChars: z.number().step(1).min(200).max(200000).default(8000),
@@ -145,7 +145,7 @@ export function apply(ctx, config = {}) {
       topK: clampInt(value.topK, 1, 50, 10),
       rerank: value.rerank === true,
       recallEnabled: value.recallEnabled !== false,
-      recallWaitMs: clampInt(value.recallWaitMs, 0, 120000, 15000),
+      recallWaitMs: clampInt(value.recallWaitMs, 0, 120000, 0),
       distillEnabled: value.distillEnabled !== false,
       distillMinChars: clampInt(value.distillMinChars, 1, 100000, 500),
       distillInputMaxChars: clampInt(value.distillInputMaxChars, 200, 200000, 8000),
@@ -194,6 +194,7 @@ export function apply(ctx, config = {}) {
     const existing = pendingRecall.get(sessionId)
     if (existing && existing.query === query) return
     const s = spec()
+    const state = { query }
     const promise = (async () => {
       const distilled = await distillQuery(query, {
         enabled: s.distillEnabled,
@@ -214,11 +215,16 @@ export function apply(ctx, config = {}) {
           .filter(Boolean)
         return lines.length > 0 ? lines.map((line) => '- ' + line).join('\n') : ''
       })
+      .then((text) => {
+        state.settled = true
+        return text
+      })
       .catch((error) => {
         log.debug('recall prefetch failed: ' + String((error && error.message) || error))
         return ''
       })
-    pendingRecall.set(sessionId, { query, promise })
+    state.promise = promise
+    pendingRecall.set(sessionId, state)
   }
 
   // 全局监听 agent/created（载荷带 agent，实测确认），在 agent 级 scoped ctx 上注册
@@ -273,6 +279,17 @@ export function apply(ctx, config = {}) {
       }
     })
   }), 'mem0:agent-hooks')
+  const pushRecallSection = (assembly, recalled) => {
+    assembly.sections.push({
+      name: 'mem0:recall',
+      text:
+        '# Mem0 Memory\n' +
+        '[System note: the following is recalled memory context, NOT new user input. ' +
+        'Treat it as authoritative reference data — your persistent memory of this user.]\n' +
+        'Relevant memories recalled for the current question:\n' + recalled
+    })
+  }
+
   ctx.effect(() => ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     try {
       const agent = context && context.agent
@@ -281,20 +298,18 @@ export function apply(ctx, config = {}) {
         const pending = pendingRecall.get(agent.id)
         if (pending) {
           pendingRecall.delete(agent.id)
-          const winner = await Promise.race([
-            pending.promise.then((text) => ({ text })),
-            sleep(s.recallWaitMs, context.signal)
-          ])
-          const recalled = winner ? winner.text : ''
-          if (recalled) {
-            assembly.sections.push({
-              name: 'mem0:recall',
-              text:
-                '# Mem0 Memory\n' +
-                '[System note: the following is recalled memory context, NOT new user input. ' +
-                'Treat it as authoritative reference data — your persistent memory of this user.]\n' +
-                'Relevant memories recalled for the current question:\n' + recalled
-            })
+          if (pending.settled === true) {
+            // 预取已完成：注入零延迟（promise 已 settle，无网络等待）
+            const recalled = await pending.promise
+            if (recalled) pushRecallSection(assembly, recalled)
+          } else if (s.recallWaitMs > 0) {
+            // 显式开启等待窗口（默认 0 = 绝不阻塞消息显示与首 token；
+            // 未完成的召回由 usage 节引导模型 mem0_search 工具兜底）
+            const winner = await Promise.race([
+              pending.promise.then((text) => ({ text })),
+              sleep(s.recallWaitMs, context.signal)
+            ])
+            if (winner && winner.text) pushRecallSection(assembly, winner.text)
           }
         }
       }

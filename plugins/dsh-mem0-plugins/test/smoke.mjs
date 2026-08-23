@@ -162,7 +162,7 @@ function resolveConfigManually(schema, entry) {
     topK: 10,
     rerank: false,
     recallEnabled: true,
-    recallWaitMs: 15000,
+    recallWaitMs: 0,
     distillEnabled: true,
     distillMinChars: 500,
     distillInputMaxChars: 8000,
@@ -321,10 +321,12 @@ console.log('== 显式关闭(enabled=false)时工具给出明确指引 ==')
 }
 
 console.log('== 启用后：召回链路 ==')
-env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTimeoutMs: 5000 })
+env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 0, requestTimeoutMs: 5000 })
 {
   const [agentA] = await spawnAll(['sess-A'])
   await emitOn(agentA, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '我喜欢什么风格？' }] }, turn: 1 })
+  // 等待预取链落定（真实快 server 场景：装配时预取已完成 → 非阻塞注入）
+  await new Promise((r) => setTimeout(r, 5))
   const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
   assert.ok(callsBefore >= 1, '预取搜索未发出'); ok('claimed 即发起后台 /search 预取')
 
@@ -344,6 +346,8 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
     const [agentL] = await spawnAll(['sess-L'])
     const longText = '下面是我贴的服务器日志，帮我看看有没有问题：' + 'log line; '.repeat(120)
     await emitOn(agentL, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: longText }] }, turn: 1 })
+    // 蒸馏+搜索链落定（模拟快 server：装配时预取已完成）
+    await new Promise((r) => setTimeout(r, 10))
     const assembly = { sections: [] }
     await emit('system-prompt/assemble', assembly, { agent: { id: 'sess-L' } }, async () => assembly)
     const searchCall = fetchCalls.filter((c) => c.path === '/search').at(-1)
@@ -431,6 +435,31 @@ console.log('== 并发轮 user 文本配对 ==')
   const joined = bodies.join('')
   assert.ok(joined.includes('第一轮的问题'), 'turn1 配对错位'); ok('turn1 配对到自己的 user 文本')
   assert.ok(joined.includes('第二轮的问题'), 'turn2 配对错位'); ok('turn2 配对到自己的 user 文本')
+}
+
+console.log('== 非阻塞协议：慢召回不阻塞装配 ==')
+{
+  // 人为制造慢 search（300ms 后才返回）
+  const origFetch = globalThis.fetch
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname
+    if (path === '/search') {
+      await new Promise((r) => setTimeout(r, 300))
+      return origFetch(url, init)
+    }
+    return origFetch(url, init)
+  }
+  await spawnAll(['sess-NB'])
+  const agentNB = env.ctx.agentCtxs[env.ctx.agentCtxs.length - 1]
+  await emitOn(agentNB, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '这里有记忆吗' }] }, turn: 1 })
+  const assemblyNB = { sections: [] }
+  const t0 = Date.now()
+  await emit('system-prompt/assemble', assemblyNB, { agent: { id: 'sess-NB' } }, async () => assemblyNB)
+  const elapsed = Date.now() - t0
+  assert.ok(elapsed < 80, '装配被慢召回阻塞了 ' + elapsed + 'ms'); ok('慢召回下装配立即放行（' + elapsed + 'ms）')
+  assert.equal(assemblyNB.sections.find((sec) => sec.name === 'mem0:recall'), undefined); ok('未完成召回不注入（放行后由 mem0_search 工具兜底）')
+  globalThis.fetch = origFetch
+  await new Promise((r) => setTimeout(r, 400)) // 等慢请求落定，避免悬挂影响后续用例
 }
 
 console.log('== 工具执行：search 成功形态 ==')

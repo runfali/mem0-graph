@@ -58,7 +58,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `recallEnabled` | `true` | claimed 预取 + 提示词注入总开关 |
-| `recallWaitMs` | `15000` | 装配点等待预取结果的上限（对齐 hermes `_PREFETCH_WAIT_SECS=15`），超时跳过本次注入 |
+| `recallWaitMs` | `0` | 装配点等待预取结果的上限。**默认 0 = 纯异步**：消息立即落库显示、首 token 零延迟（后台预取已完成才注入，未完成由 `mem0_search` 工具兜底）；调大则最多等待该毫秒后注入 |
 | `topK` | `10` | 每次召回最大条数（1–50） |
 | `rerank` | `false` | 开启则以全深度模式请求重排（服务端需配置 reranker） |
 | `distillEnabled` | `true` | 长文本查询蒸馏总开关（见下方「查询蒸馏」） |
@@ -144,7 +144,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | 层级 | 默认值 | 说明 |
 |------|--------|------|
 | HTTP 总闸 `requestTimeoutMs` | 300s | 插件→server 单请求上限；server 内 LLM 三层兜底最坏 180s，正常召回摸不到总闸 |
-| 召回热等待 `recallWaitMs` | 15s | 主回复前最多等预取这么久，超时不阻塞对话，记忆后台异步补上 |
+| 召回热等待 `recallWaitMs` | 0（默认） | **非阻塞默认**：消息落库显示与首 token 零延迟；已完成的后台预取结果注入，未完成的放行由 `mem0_search` 工具兜底。>0 时可选等待（对齐 hermes `_PREFETCH_WAIT_SECS=15` 的可调上限） |
 | 工具级额外限時 | 无 | 有意不设——只有总闸一层，与 hermes 行为一致 |
 
 ## 本地验证
