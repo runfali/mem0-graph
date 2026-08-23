@@ -39,7 +39,7 @@ services:
     - APP_DB_NAME=mem0_app
     - JWT_SECRET=${JWT_SECRET}
     - AUTH_DISABLED=${AUTH_DISABLED:-false}
-    - MEM0_TELEMETRY=${MEM0_TELEMETRY:-true}
+    - MEM0_TELEMETRY=${MEM0_TELEMETRY:-false}
     - TZ=Asia/Shanghai
     healthcheck:
       test:
@@ -72,7 +72,9 @@ services:
     - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     - /etc/localtime:/etc/localtime:ro
     ports:
-    - 8432:5432
+    # 数据库只对本机暴露：FalkorDB 默认无认证，PG 存全部用户数据，
+    # 都不该出现在局域网/公网网卡上。容器间走 mem0_network，不经宿主端口。
+    - 127.0.0.1:8432:5432
   mem0-dashboard:
     build: ./dashboard
     ports:
@@ -103,8 +105,8 @@ services:
   falkordb:
     image: falkordb/falkordb:latest
     ports:
-    - 6379:6379
-    - 3003:3000
+    - 127.0.0.1:6379:6379
+    - 127.0.0.1:3003:3000
     volumes:
     - ./data/falkordb:/var/lib/falkordb/data
     - /etc/localtime:/etc/localtime:ro
