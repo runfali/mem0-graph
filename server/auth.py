@@ -175,6 +175,11 @@ async def verify_auth(
     )
 
 
+_BOOTSTRAP_ADMIN = User(
+    id=uuid.UUID(int=0), name="admin_api_key", email="", password_hash="", role="admin", created_at=datetime.min.replace(tzinfo=timezone.utc),
+)
+
+
 async def require_auth(
     request: Request,
     user: User | None = Depends(verify_auth),
@@ -186,13 +191,11 @@ async def require_auth(
                 default_user = _get_default_user(db)
             if default_user is not None:
                 return default_user
+            # Fresh-deploy bootstrap (no users seeded yet): config-authenticated
+            # callers get the synthetic admin, mirroring require_admin below.
+            return _BOOTSTRAP_ADMIN
         raise HTTPException(status_code=401, detail="Authentication required.")
     return user
-
-
-_BOOTSTRAP_ADMIN = User(
-    id=uuid.UUID(int=0), name="admin_api_key", email="", password_hash="", role="admin", created_at=datetime.min.replace(tzinfo=timezone.utc),
-)
 
 
 async def require_admin(
