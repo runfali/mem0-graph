@@ -113,16 +113,30 @@ def normalize_facts(raw_facts):
     return normalized
 
 
+_THINK_TAG_PAIR_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+# An unterminated <think> (no closing tag): reasoning ran into the payload,
+# so everything from the opening tag onward is noise.
+_THINK_TAG_UNCLOSED_RE = re.compile(r"<think>(?!.*?</think>).*$", re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove DeepSeek-style <think>...</think> reasoning spans (and an
+    unterminated leading <think>) from a non-JSON region of an LLM reply."""
+    text = _THINK_TAG_PAIR_RE.sub("", text)
+    return _THINK_TAG_UNCLOSED_RE.sub("", text)
+
+
 def remove_code_blocks(content: str) -> str:
     """
     Removes enclosing code block markers ```[language] and ``` from a given string.
-    Also strips DeepSeek-style thinking blocks that appear before the JSON content.
+    Also strips DeepSeek-style thinking blocks (<think>...</think> tags or
+    plain "thinking ... response" markers) that appear before the JSON content.
 
     Remarks:
     - The function uses a regex pattern to match code blocks that may start with ``` followed by an optional language tag (letters or numbers) and end with ```.
     - If a code block is detected, it returns only the inner content, stripping out the markers.
     - If no code block markers are found, the original content is returned as-is.
-    - Thinking blocks are only stripped from the prefix before the first '{' to avoid corrupting JSON content that legitimately contains "thinking"/"response" words.
+    - Thinking blocks are only stripped from the prefix before the first '{' to avoid corrupting JSON content that legitimately contains "thinking"/"response"/"<think>" words.
     """
     pattern = r"^```[a-zA-Z0-9]*\n([\s\S]*?)\n```$"
     match = re.match(pattern, content.strip())
@@ -138,13 +152,15 @@ def remove_code_blocks(content: str) -> str:
             r"^\s*thinking.*?\s*response\s*",
             "", prefix, flags=re.DOTALL,
         )
+        prefix = _strip_think_tags(prefix)
         return (prefix + json_part).strip()
     elif first_brace == -1:
         # No JSON found — strip thinking block from entire content (backward compat)
-        return re.sub(
+        match_res = re.sub(
             r"^\s*thinking.*?\s*response\s*",
             "", match_res, flags=re.DOTALL,
-        ).strip()
+        )
+        return _strip_think_tags(match_res).strip()
 
     # JSON starts at position 0 — no prefix to strip
     return match_res.strip()
