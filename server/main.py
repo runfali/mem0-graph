@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from mem0.exceptions import ValidationError as Mem0ValidationError
 from models import EvolveQuery, EvolveSalience, RequestLog, User
 from pydantic import BaseModel, Field
-from rate_limit import limiter
+from rate_limit import DataPlaneRateLimitMiddleware, limiter
 from routers import api_keys as api_keys_router
 from routers import auth as auth_router
 from routers import entities as entities_router
@@ -266,6 +266,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Data-plane limiter: added after CORS so it runs inside the CORS wrapper
+# (preflight OPTIONS is exempt anyway). /auth/* keeps its stricter slowapi
+# quotas and is skipped by this middleware.
+app.add_middleware(DataPlaneRateLimitMiddleware)
 
 
 @app.on_event("startup")

@@ -28,6 +28,8 @@ import tempfile
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-not-for-production")
 os.environ.setdefault("AUTH_DISABLED", "true")
 os.environ.setdefault("OPENAI_API_KEY", "test-key-not-used")
+# The data-plane limiter is per-process; a realistic default would trip mid-suite.
+os.environ.setdefault("MEM0_RATE_LIMIT_DATA", "100000/minute")
 # server_state persists config changes to MEM0_CONFIG_PATH (default /app/config.json
 # inside Docker); redirect to a throwaway file so tests never touch the host FS.
 _TEST_CFG_DIR = tempfile.mkdtemp(prefix="mem0-server-tests-")
