@@ -13,12 +13,25 @@ logger = logging.getLogger(__name__)
 class SQLiteManager:
     def __init__(self, db_path: str = ":memory:"):
         self.db_path = db_path
-        self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
+        # isolation_level=None puts the driver in autocommit mode so it never
+        # opens implicit transactions; every transaction below is managed
+        # explicitly via BEGIN/COMMIT. Without this, the driver's legacy
+        # implicit-transaction handling collides with the manual "BEGIN" here
+        # ("cannot start a transaction within a transaction").
+        self.connection = sqlite3.connect(self.db_path, check_same_thread=False, isolation_level=None)
         self._lock = threading.Lock()
         self._migrate_history_table()
         self._create_history_table()
         self._create_messages_table()
         self._run_migrations()
+
+    def _rollback_quietly(self) -> None:
+        """Best-effort rollback so a failing ROLLBACK can't mask the original error."""
+        try:
+            if self.connection is not None and self.connection.in_transaction:
+                self.connection.execute("ROLLBACK")
+        except sqlite3.Error as rollback_err:
+            logger.warning("Rollback failed: %s", rollback_err)
 
     def _migrate_history_table(self) -> None:
         """
@@ -98,7 +111,7 @@ class SQLiteManager:
 
             except Exception as e:
                 # Rollback the transaction on any error
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"History table migration failed: {e}")
                 raise
 
@@ -124,7 +137,7 @@ class SQLiteManager:
                 )
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to create history table: {e}")
                 raise
 
@@ -146,7 +159,7 @@ class SQLiteManager:
                 )
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to create messages table: {e}")
                 raise
 
@@ -196,7 +209,7 @@ class SQLiteManager:
                 )
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to add history record: {e}")
                 raise
 
@@ -230,7 +243,7 @@ class SQLiteManager:
                 )
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to batch add history records: {e}")
                 raise
 
@@ -301,7 +314,7 @@ class SQLiteManager:
                 )
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to save messages: {e}")
                 raise
 
@@ -344,7 +357,7 @@ class SQLiteManager:
                 self.connection.execute("DROP TABLE IF EXISTS messages")
                 self.connection.execute("COMMIT")
             except Exception as e:
-                self.connection.execute("ROLLBACK")
+                self._rollback_quietly()
                 logger.error(f"Failed to reset tables: {e}")
                 raise
 

@@ -91,7 +91,7 @@ def test_list_memories(memory_client):
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_collection_name_preserved_after_reset(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     mock_embedder_factory.return_value = MagicMock()
     mock_vector_store = MagicMock()
@@ -173,7 +173,7 @@ async def test_async_memory_reset_clears_messages_table(mock_llm_factory, mock_v
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_search_handles_incomplete_payloads(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """Test that search operations handle memory objects with missing 'data' key gracefully."""
     mock_embedder_factory.return_value = MagicMock()
@@ -208,7 +208,7 @@ def test_search_handles_incomplete_payloads(mock_sqlite, mock_llm_factory, mock_
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_search_explain_includes_score_details(
     mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory, _mock_extract_entities
 ):
@@ -243,7 +243,7 @@ def test_search_explain_includes_score_details(
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_get_all_handles_nested_list_from_chroma(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that get_all() handles nested list return from Chroma/Milvus.
@@ -281,7 +281,7 @@ def test_get_all_handles_nested_list_from_chroma(mock_sqlite, mock_llm_factory, 
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_get_all_handles_tuple_from_qdrant(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that get_all() handles tuple return from Qdrant.
@@ -315,7 +315,7 @@ def test_get_all_handles_tuple_from_qdrant(mock_sqlite, mock_llm_factory, mock_v
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_get_all_handles_flat_list_from_postgres(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that get_all() handles flat list return from PostgreSQL.
@@ -349,7 +349,7 @@ def test_get_all_handles_flat_list_from_postgres(mock_sqlite, mock_llm_factory, 
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_read_apis_surface_attributed_to(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     attributed_to is written to the payload on add (and the extraction prompt marks it
@@ -394,7 +394,7 @@ def test_read_apis_surface_attributed_to(mock_sqlite, mock_llm_factory, mock_vec
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 async def test_async_read_apis_surface_attributed_to(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """AsyncMemory get/get_all/search must surface attributed_to, same as the sync path."""
     mock_embedder = MagicMock()
@@ -434,7 +434,7 @@ async def test_async_read_apis_surface_attributed_to(mock_sqlite, mock_llm_facto
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_add_infer_with_malformed_llm_facts(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Repro for: 'list' object has no attribute 'replace' on infer=true.
@@ -507,7 +507,7 @@ def test_normalize_facts_filters_empty_strings():
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_delete_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that delete() raises ValueError when memory_id does not exist
@@ -538,7 +538,7 @@ def test_delete_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, m
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 async def test_async_delete_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that async delete() raises ValueError when memory_id does not exist
@@ -567,7 +567,7 @@ async def test_async_delete_nonexistent_memory_raises_error(mock_sqlite, mock_ll
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_update_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that _update_memory() raises ValueError when memory_id does not exist.
@@ -597,7 +597,7 @@ def test_update_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, m
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 async def test_async_update_nonexistent_memory_raises_error(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Test that async _update_memory() raises ValueError when memory_id does not exist.
@@ -625,7 +625,7 @@ async def test_async_update_nonexistent_memory_raises_error(mock_sqlite, mock_ll
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_update_propagates_vector_store_failure(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """A backing-store failure while fetching the memory during update must
     surface as the original error, not be masked as a 'provide a valid
@@ -653,7 +653,7 @@ def test_update_propagates_vector_store_failure(mock_sqlite, mock_llm_factory, m
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 async def test_async_update_propagates_vector_store_failure(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """Async twin: a backing-store failure during update re-raises the original
     error instead of masking it as a ValueError."""
@@ -678,7 +678,7 @@ async def test_async_update_propagates_vector_store_failure(mock_sqlite, mock_ll
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_add_infer_false_embeds_once(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Regression test for issue #3723: adding with infer=False should not trigger duplicate embedding calls.
@@ -713,7 +713,7 @@ def test_add_infer_false_embeds_once(mock_sqlite, mock_llm_factory, mock_vector_
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_add_infer_true_caches_embedding_on_llm_rewrite(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Regression test for issue #3723 (infer=True path): when the LLM rewrites a fact during the
@@ -758,7 +758,7 @@ def test_add_infer_true_caches_embedding_on_llm_rewrite(mock_sqlite, mock_llm_fa
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_update_infer_true_caches_embedding_on_llm_rewrite(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Regression test for issue #3723 (infer=True path): V3 is ADD-only, so this test verifies
@@ -1004,7 +1004,7 @@ async def test_async_delete_all_continues_on_partial_failure(mock_sqlite, mock_l
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 class TestProcessMetadataFiltersMerge:
     """Regression tests for issue #3952: multiple operators on the same key must be merged."""
 
@@ -1082,7 +1082,7 @@ class TestProcessMetadataFiltersMerge:
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_reset_skips_graph_when_graph_disabled(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """Test that reset() does NOT call graph.reset() when graph is disabled."""
     mock_embedder_factory.return_value = MagicMock()
@@ -1107,7 +1107,7 @@ def test_reset_skips_graph_when_graph_disabled(mock_sqlite, mock_llm_factory, mo
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_search_rejects_user_id_kwarg(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """search() should reject user_id as top-level kwarg."""
     mock_embedder_factory.return_value = MagicMock()
@@ -1125,7 +1125,7 @@ def test_search_rejects_user_id_kwarg(mock_sqlite, mock_llm_factory, mock_vector
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_get_all_rejects_user_id_kwarg(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """get_all() should reject user_id as top-level kwarg."""
     mock_embedder_factory.return_value = MagicMock()
@@ -1144,7 +1144,7 @@ def test_get_all_rejects_user_id_kwarg(mock_sqlite, mock_llm_factory, mock_vecto
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 def test_sync_create_memory_stores_text_lemmatized(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """Sync Memory._create_memory must include text_lemmatized in payload for BM25 keyword search."""
     embedder = MagicMock()
@@ -1180,7 +1180,7 @@ def test_sync_create_memory_stores_text_lemmatized(mock_sqlite, mock_llm_factory
 @patch('mem0.utils.factory.EmbedderFactory.create')
 @patch('mem0.utils.factory.VectorStoreFactory.create')
 @patch('mem0.utils.factory.LlmFactory.create')
-@patch('mem0.memory.storage.SQLiteManager')
+@patch('mem0.memory.main.SQLiteManager')
 async def test_async_create_memory_stores_text_lemmatized(mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
     """
     Regression test: AsyncMemory._create_memory must include text_lemmatized
@@ -1302,7 +1302,7 @@ class TestPreserveCustomMetadata:
     @patch('mem0.utils.factory.EmbedderFactory.create')
     @patch('mem0.utils.factory.VectorStoreFactory.create')
     @patch('mem0.utils.factory.LlmFactory.create')
-    @patch('mem0.memory.storage.SQLiteManager')
+    @patch('mem0.memory.main.SQLiteManager')
     def test_update_preserves_custom_metadata(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
         mock_embedder_factory.return_value = MagicMock()
         mock_vector_store = MagicMock()
@@ -1342,7 +1342,7 @@ class TestPreserveCustomMetadata:
     @patch('mem0.utils.factory.EmbedderFactory.create')
     @patch('mem0.utils.factory.VectorStoreFactory.create')
     @patch('mem0.utils.factory.LlmFactory.create')
-    @patch('mem0.memory.storage.SQLiteManager')
+    @patch('mem0.memory.main.SQLiteManager')
     def test_update_with_new_metadata_overrides_existing(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
         mock_embedder_factory.return_value = MagicMock()
         mock_vector_store = MagicMock()
@@ -1380,7 +1380,7 @@ class TestPreserveCustomMetadata:
     @patch('mem0.utils.factory.EmbedderFactory.create')
     @patch('mem0.utils.factory.VectorStoreFactory.create')
     @patch('mem0.utils.factory.LlmFactory.create')
-    @patch('mem0.memory.storage.SQLiteManager')
+    @patch('mem0.memory.main.SQLiteManager')
     def test_update_preserves_actor_id_from_original(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
         mock_embedder_factory.return_value = MagicMock()
         mock_vector_store = MagicMock()
@@ -1415,7 +1415,7 @@ class TestPreserveCustomMetadata:
     @patch('mem0.utils.factory.EmbedderFactory.create')
     @patch('mem0.utils.factory.VectorStoreFactory.create')
     @patch('mem0.utils.factory.LlmFactory.create')
-    @patch('mem0.memory.storage.SQLiteManager')
+    @patch('mem0.memory.main.SQLiteManager')
     async def test_async_update_preserves_custom_metadata(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
         mock_embedder_factory.return_value = MagicMock()
         mock_vector_store = MagicMock()
@@ -1455,7 +1455,7 @@ class TestAsyncDeleteAllEntityRace:
     @patch('mem0.utils.factory.EmbedderFactory.create')
     @patch('mem0.utils.factory.VectorStoreFactory.create')
     @patch('mem0.utils.factory.LlmFactory.create')
-    @patch('mem0.memory.storage.SQLiteManager')
+    @patch('mem0.memory.main.SQLiteManager')
     async def test_async_delete_all_bulk_clears_entity_store(self, mock_sqlite, mock_llm_factory, mock_vector_factory, mock_embedder_factory):
         """
         Verify that async delete_all bulk-clears entity records after
@@ -1503,8 +1503,11 @@ class TestAsyncDeleteAllEntityRace:
 @patch("mem0.memory.main.VectorStoreFactory")
 @patch("mem0.memory.main.EmbedderFactory")
 @patch("mem0.memory.main.LlmFactory")
-async def test_async_procedural_memory_langchain_strips_code_blocks(mock_llm_factory, mock_emb, mock_vs):
+async def test_async_procedural_memory_langchain_strips_code_blocks(mock_llm_factory, mock_emb, mock_vs, tmp_path):
     """Regression #5710: async LangChain path must call remove_code_blocks()."""
+    # This test exercises the custom-LLM branch, which legitimately requires
+    # the optional langchain-core dependency; skip cleanly when absent.
+    pytest.importorskip("langchain_core")
     mock_vs.return_value = MagicMock()
     mock_emb.return_value = MagicMock()
     mock_emb.return_value.embed.return_value = [0.1] * 1536
@@ -1513,6 +1516,7 @@ async def test_async_procedural_memory_langchain_strips_code_blocks(mock_llm_fac
     from mem0.memory.main import AsyncMemory
 
     config = MemoryConfig()
+    config.history_db_path = str(tmp_path / "test.db")
     memory = AsyncMemory(config)
     memory.vector_store = MagicMock()
     memory.vector_store.insert = MagicMock()
@@ -1536,7 +1540,7 @@ async def test_async_procedural_memory_langchain_strips_code_blocks(mock_llm_fac
 @patch("mem0.memory.main.VectorStoreFactory")
 @patch("mem0.memory.main.EmbedderFactory")
 @patch("mem0.memory.main.LlmFactory")
-async def test_async_procedural_memory_default_path_without_langchain(mock_llm_factory, mock_emb, mock_vs):
+async def test_async_procedural_memory_default_path_without_langchain(mock_llm_factory, mock_emb, mock_vs, tmp_path):
     """Async procedural memory must not require langchain-core on the default
     (llm=None) path, which uses self.llm and never calls convert_to_messages.
     The sync path already works without it; this keeps the async path in parity.
@@ -1549,6 +1553,7 @@ async def test_async_procedural_memory_default_path_without_langchain(mock_llm_f
     from mem0.memory.main import AsyncMemory
 
     config = MemoryConfig()
+    config.history_db_path = str(tmp_path / "test.db")
     memory = AsyncMemory(config)
     memory.vector_store = MagicMock()
     memory.vector_store.insert = MagicMock()
