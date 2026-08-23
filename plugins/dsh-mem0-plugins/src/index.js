@@ -20,6 +20,7 @@ import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-sett
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
+import { distillQuery } from './distill.js'
 
 /** Cordis 插件短名（路由/日志用）。 */
 export const name = 'mem0'
@@ -41,6 +42,14 @@ export const Config = z.object({
   rerank: z.boolean().default(false),
   recallEnabled: z.boolean().default(true),
   recallWaitMs: z.number().step(1).min(0).max(120000).default(15000),
+  distillEnabled: z.boolean().default(true),
+  distillMinChars: z.number().step(1).min(1).max(100000).default(500),
+  distillInputMaxChars: z.number().step(1).min(200).max(200000).default(8000),
+  distillBaseUrl: z.string().default('http://10.220.0.35:8090/v1'),
+  distillApiKey: z.string().default('devops'),
+  distillModel: z.string().default('Qwen3.5-9B'),
+  distillTimeoutMs: z.number().step(1).min(1000).max(300000).default(30000),
+  distillRetryAfterMs: z.number().step(1).min(500).max(120000).default(20000),
   syncEnabled: z.boolean().default(true),
   feedbackEnabled: z.boolean().default(true),
   coalesceEnabled: z.boolean().default(true),
@@ -123,6 +132,14 @@ export function apply(ctx, config = {}) {
       rerank: value.rerank === true,
       recallEnabled: value.recallEnabled !== false,
       recallWaitMs: clampInt(value.recallWaitMs, 0, 120000, 15000),
+      distillEnabled: value.distillEnabled !== false,
+      distillMinChars: clampInt(value.distillMinChars, 1, 100000, 500),
+      distillInputMaxChars: clampInt(value.distillInputMaxChars, 200, 200000, 8000),
+      distillBaseUrl: String(value.distillBaseUrl || '').trim(),
+      distillApiKey: String(value.distillApiKey || '').trim(),
+      distillModel: String(value.distillModel || '').trim() || 'Qwen3.5-9B',
+      distillTimeoutMs: clampInt(value.distillTimeoutMs, 1000, 300000, 30000),
+      distillRetryAfterMs: clampInt(value.distillRetryAfterMs, 500, 120000, 20000),
       syncEnabled: value.syncEnabled !== false,
       feedbackEnabled: value.feedbackEnabled !== false,
       coalesceEnabled: value.coalesceEnabled !== false,
@@ -164,8 +181,19 @@ export function apply(ctx, config = {}) {
     const existing = pendingRecall.get(sessionId)
     if (existing && existing.query === query) return
     const s = spec()
-    const promise = clientFor(s)
-      .search({ query, filters: { user_id: s.userId }, topK: s.topK, rerank: s.rerank })
+    const promise = (async () => {
+      const distilled = await distillQuery(query, {
+        enabled: s.distillEnabled,
+        minChars: s.distillMinChars,
+        inputMaxChars: s.distillInputMaxChars,
+        baseUrl: s.distillBaseUrl,
+        apiKey: s.distillApiKey,
+        model: s.distillModel,
+        timeoutMs: s.distillTimeoutMs,
+        retryAfterMs: s.distillRetryAfterMs
+      }, (info) => log.debug(info))
+      return clientFor(s).search({ query: distilled, filters: { user_id: s.userId }, topK: s.topK, rerank: s.rerank })
+    })()
       .then((results) => {
         const lines = (results || [])
           .map((item) => (item && typeof item.memory === 'string' ? item.memory.trim() : ''))

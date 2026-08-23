@@ -59,6 +59,14 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `recallWaitMs` | `15000` | 装配点等待预取结果的上限（对齐 hermes `_PREFETCH_WAIT_SECS=15`），超时跳过本次注入 |
 | `topK` | `10` | 每次召回最大条数（1–50） |
 | `rerank` | `false` | 开启则以全深度模式请求重排（服务端需配置 reranker） |
+| `distillEnabled` | `true` | 长文本查询蒸馏总开关（见下方「查询蒸馏」） |
+| `distillMinChars` | `500` | 不超过该长度的消息原样直查，零损失零开销 |
+| `distillInputMaxChars` | `8000` | 送入蒸馏模型的原文截断上限 |
+| `distillBaseUrl` | `http://10.220.0.35:8090/v1` | 蒸馏端点（OpenAI 兼容）；留空跳过蒸馏直查原文 |
+| `distillApiKey` | `devops` | Bearer 鉴权，与 hermes 默认一致 |
+| `distillModel` | `Qwen3.5-9B` | 蒸馏模型（本地部署） |
+| `distillTimeoutMs` | `30000` | 蒸馏单次超时 |
+| `distillRetryAfterMs` | `20000` | 双飞触发阈值：首请求无响应超过该时长即并发第二请求，先完成者胜出 |
 
 ### 自动写入
 
@@ -89,6 +97,26 @@ dsh plugin --profile web remove dsh-mem0-plugins
     enabled: true
     host: http://10.200.0.5:8888
     apiKey: your-admin-api-key
+```
+
+## 查询蒸馏（防长文本打爆服务端）
+
+移植自 hermes `agent/memory_manager.py::_distill_query`，只作用于**召回查询**，
+不碰写入路径：
+
+1. 消息 ≤500 字符：原样直查——零语义损失、零额外调用；
+2. 超长消息（贴日志/代码）：截断前 8000 字符送本地小模型提炼成「2–4 关键词或
+   一句检索意图」再去 `/search`，embedding 与检索不再吃整段噪音；
+3. **语言漂移防护**：中文输入的蒸馏结果若出现越南语重音字符或非拉丁非 CJK
+   文字（聚合网关路由漂移到多语小模型的实证症状），判为污染即回退；
+4. **并发双飞**：首请求 20s 无响应即并发第二请求（首个不取消），先完成者胜出；
+5. 全部失败/超时：回退原始 query，检索永不静默丢失。
+
+真机记录（2026-08-23，Qwen3.5-9B @10.220.0.35:8090）：
+
+```
+原文长度: 4250 → distilled 4250 -> 17 chars (6480 ms)
+蒸馏结果: mem0 服务端部署端口和内网地址
 ```
 
 ## 可靠性设计

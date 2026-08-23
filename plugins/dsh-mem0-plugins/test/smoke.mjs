@@ -18,6 +18,7 @@ import assert from 'node:assert/strict'
 import { apply, Config, MEM0_SETTINGS_NAMESPACE } from '../src/index.js'
 import { CircuitBreaker, Mem0HttpError, isClientError } from '../src/backend.js'
 import { looksLikeJson, sanitizeJsonMessage } from '../src/coalesce.js'
+import { distillQuery } from '../src/distill.js'
 
 const PASS = []
 function ok(label) {
@@ -39,6 +40,13 @@ globalThis.fetch = async (url, init = {}) => {
   if (failNextNetwork && path === '/search') {
     failNextNetwork = false
     throw new TypeError('fetch failed')
+  }
+  if (path.endsWith('/chat/completions')) {
+    const req = JSON.parse(String(init.body))
+    const content = req.messages[0].content
+    // 漂移用例：消息含「越南语污染」标记时返回越南语意图
+    if (content.includes('DRIFT-CASE')) return jsonResponse(200, { choices: [{ message: { content: 'nhật ký triển khai máy chủ' } }] })
+    return jsonResponse(200, { choices: [{ message: { content: JSON.stringify({ intent: '部署端口配置' }) } }] })
   }
   if (path === '/search') return jsonResponse(200, searchResponse)
   if (path === '/memories') {
@@ -101,17 +109,15 @@ function makeCtx(config) {
     },
     settings: {
       register(ns, schema, options) {
-        // 用真实 schema 解析 composition base，验证 Config 定义本身合法
-        scopeValue = schema.resolve ? schema.resolve(options.base || {}) : options.base || {}
+        // 模拟宿主解析结果：schema 默认值 + composition base 合并成完整 section
+        scopeValue = resolveConfigManually(schema, options.base || {})
         return scope
       }
     },
     tools: { register: (def) => tools.push(def) },
     systemPrompt: { section: (def) => sections.push(def) }
   }
-  // schemastery 的 z.object 实例带 .resolve？若无则手工兜底默认值
-  if (!scopeValue) scopeValue = resolveConfigManually(Config, config)
-  else scopeValue = resolveConfigManually(Config, config)
+  scopeValue = resolveConfigManually(Config, config)
   return { ctx, effects, listeners, tools, sections, setScope: (v) => { scopeValue = v }, getScope: () => scopeValue }
 }
 
@@ -127,6 +133,14 @@ function resolveConfigManually(schema, entry) {
     rerank: false,
     recallEnabled: true,
     recallWaitMs: 15000,
+    distillEnabled: true,
+    distillMinChars: 500,
+    distillInputMaxChars: 8000,
+    distillBaseUrl: 'http://mock-distill/v1',
+    distillApiKey: 'devops',
+    distillModel: 'Qwen3.5-9B',
+    distillTimeoutMs: 30000,
+    distillRetryAfterMs: 20000,
     syncEnabled: true,
     feedbackEnabled: true,
     coalesceEnabled: true,
@@ -162,6 +176,32 @@ console.log('== 单元：熔断器 ==')
   assert.equal(isClientError(new Mem0HttpError(404, '/memories/x', '')), true); ok('404 归类客户端错误')
 }
 
+console.log('== 单元：查询蒸馏 ==')
+{
+  const opts = (over) => ({
+    enabled: true, minChars: 10, inputMaxChars: 8000,
+    baseUrl: 'http://mock-distill/v1', apiKey: 'devops', model: 'Qwen3.5-9B',
+    timeoutMs: 5000, retryAfterMs: 20000, ...over
+  })
+  const short = await distillQuery('短消息直查', opts({ minChars: 50 }))
+  assert.equal(short, '短消息直查'); ok('短消息原样通过（零调用）')
+
+  const long = 'x'.repeat(600)
+  const distilled = await distillQuery(long, opts())
+  assert.equal(distilled, '部署端口配置'); ok('长文本提炼为检索意图')
+  assert.ok(fetchCalls.some((c) => c.path.endsWith('/chat/completions')), '蒸馏请求已发出'); ok('蒸馏端点被调用')
+
+  const drifted = await distillQuery('中文日志 DRIFT-CASE ' + 'y'.repeat(600), opts())
+  assert.ok(drifted.startsWith('中文日志'), '漂移应回退原文，实际: ' + drifted.slice(0, 30)); ok('语言漂移回退原文')
+
+  const disabled = await distillQuery('z'.repeat(600), opts({ enabled: false }))
+  assert.equal(disabled.length, 600); ok('关闭蒸馏时原文直查')
+
+  const fallback = await distillQuery('w'.repeat(600), opts({ baseUrl: '' }))
+  assert.equal(fallback.length, 600); ok('未配端点回退原文')
+}
+
+console.log('== 召回链路含蒸馏（超长消息）==')
 console.log('== Host apply 全链路 ==')
 const env = makeCtx({})
 apply(env.ctx, { host: 'http://mock:9999' })
@@ -202,6 +242,19 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
   const assembly2 = { sections: [] }
   await emit('system-prompt/assemble', assembly2, { agent }, async () => assembly2)
   assert.equal(assembly2.sections.find((s) => s.name === 'mem0:recall'), undefined); ok('召回消费一次即清理')
+
+  // 超长用户消息 → 蒸馏后的意图作为 /search query
+  {
+    const longAgent = { id: 'sess-L' }
+    const longText = '下面是我贴的服务器日志，帮我看看有没有问题：' + 'log line; '.repeat(120)
+    await emit('agent/inbox/claimed', { agent: longAgent, message: { content: [{ type: 'text', text: longText }] }, turn: 1 })
+    const assembly = { sections: [] }
+    await emit('system-prompt/assemble', assembly, { agent: longAgent }, async () => assembly)
+    const searchCall = fetchCalls.filter((c) => c.path === '/search').at(-1)
+    const sentQuery = JSON.parse(searchCall.body).query
+    assert.equal(sentQuery, '部署端口配置'); ok('/search 收到的是蒸馏意图而非整段日志')
+    assert.ok(sentQuery.length < longText.length / 10); ok('查询长度被压缩两个数量级')
+  }
 
   // 使用说明节出现
   const usageText = env.sections[0].text()
