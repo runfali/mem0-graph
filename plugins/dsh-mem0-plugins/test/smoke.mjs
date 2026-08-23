@@ -295,10 +295,10 @@ const spawnAll = async (ids) => { const list = []; for (const id of ids) { const
 assert.equal(env.tools.length, 4); ok('注册四个工具（defineTool 真实编译通过）')
 assert.deepEqual(env.tools.map((t) => t.name), ['mem0_search', 'mem0_add', 'mem0_update', 'mem0_delete']); ok('工具名正确')
 assert.equal(env.sections.length, 1); ok('常驻使用说明节已注册')
-for (const ev of ['agent/created', 'system-prompt/assemble', 'session/event', 'settings/updated']) {
+for (const ev of ['agent/created', 'session/event', 'settings/updated']) {
   assert.ok(env.listeners.has(ev), '全局监听缺失: ' + ev)
 }
-ok('全局四类事件监听挂载（agent/created 驱动 scoped 注册）')
+ok('全局三类事件监听挂载（agent/created 驱动 scoped 注册）')
 // claimed/turn-stopping 现在注册在 agent 级 ctx（真实契约：载荷无 agent）
 {
   const probe = env.ctx.createAgent('sess-Probe')
@@ -318,56 +318,7 @@ console.log('== 显式关闭(enabled=false)时工具给出明确指引 ==')
   assert.equal(result.ok, false)
   assert.match(result.error, /未启用/)
   ok('disabled 时返回启用指引: ' + result.error.slice(0, 30) + '…')
-}
-
-console.log('== 启用后：召回链路 ==')
-env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 0, requestTimeoutMs: 5000 })
-{
-  const [agentA] = await spawnAll(['sess-A'])
-  await emitOn(agentA, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '我喜欢什么风格？' }] }, turn: 1 })
-  // 等待预取链落定（真实快 server 场景：装配时预取已完成 → 非阻塞注入）
-  await new Promise((r) => setTimeout(r, 5))
-  const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
-  assert.ok(callsBefore >= 1, '预取搜索未发出'); ok('claimed 即发起后台 /search 预取')
-
-  const assembly = { sections: [], contexts: [], tools: [] }
-  await emit('system-prompt/assemble', assembly, { agent: { id: 'sess-A' } }, async () => assembly)
-  const injected = assembly.sections.find((s) => s.name === 'mem0:recall')
-  assert.ok(injected, '召回块未注入')
-  assert.match(injected.text, /发哥偏好结论先行的短句回复/); ok('召回块注入并携带命中事实')
-
-  // 同 turn 二次装配不再重复注入
-  const assembly2 = { sections: [] }
-  await emit('system-prompt/assemble', assembly2, { agent: { id: 'sess-A' } }, async () => assembly2)
-  assert.equal(assembly2.sections.find((s) => s.name === 'mem0:recall'), undefined); ok('召回消费一次即清理')
-
-  // 超长用户消息 → 蒸馏后的意图作为 /search query
-  {
-    const [agentL] = await spawnAll(['sess-L'])
-    const longText = '下面是我贴的服务器日志，帮我看看有没有问题：' + 'log line; '.repeat(120)
-    await emitOn(agentL, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: longText }] }, turn: 1 })
-    // 蒸馏+搜索链落定（模拟快 server：装配时预取已完成）
-    await new Promise((r) => setTimeout(r, 10))
-    const assembly = { sections: [] }
-    await emit('system-prompt/assemble', assembly, { agent: { id: 'sess-L' } }, async () => assembly)
-    const searchCall = fetchCalls.filter((c) => c.path === '/search').at(-1)
-    const sentQuery = JSON.parse(searchCall.body).query
-    assert.equal(sentQuery, '部署端口配置'); ok('/search 收到的是蒸馏意图而非整段日志')
-    assert.ok(sentQuery.length < longText.length / 10); ok('查询长度被压缩两个数量级')
-  }
-
-  // 琐碎输入跳过预取
-  {
-    const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
-    const [agentT] = await spawnAll(['sess-T'])
-    await emitOn(agentT, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: 'thanks!' }] }, turn: 1 })
-    await emit('system-prompt/assemble', { sections: [] }, { agent: { id: 'sess-T' } }, async () => ({ sections: [] }))
-    assert.equal(fetchCalls.filter((c) => c.path === '/search').length, callsBefore); ok('琐碎输入零网络往返')
-  }
-
-  // 使用说明节出现
-  const usageText = env.sections[0].text()
-  assert.match(usageText, /# Mem0 Memory/); ok('使用说明节随启用而生效')
+  env.setScope({ ...env.getScope(), enabled: true }) // 恢复启用态，避免污染后续用例
 }
 
 console.log('== 启用后：写入链路 ==')
@@ -463,6 +414,19 @@ console.log('== 非阻塞协议：慢召回不阻塞装配 ==')
 }
 
 console.log('== 工具执行：search 成功形态 ==')
+console.log('== 工具蒸馏：mem0_search 长 query 走意图提炼 ==')
+{
+  const searchTool = env.tools[0]
+  const longQuery = '帮我查一下我贴的这份服务器日志：' + 'log frame; '.repeat(120)
+  const result = await searchTool.execute({ query: longQuery }, { signal: new AbortController().signal })
+  assert.equal(result.ok, true); ok('长 query 工具调用成功')
+  const searchCall = fetchCalls.filter((c) => c.path === '/search').at(-1)
+  const sent = JSON.parse(searchCall.body).query
+  assert.equal(sent, '部署端口配置'); ok('工具内蒸馏：/search 收到提炼意图而非整段日志')
+  assert.ok(sent.length < longQuery.length / 10); ok('查询长度压缩两个数量级')
+  const rendered = searchTool.output.render({}, result)
+  assert.equal(rendered[0].type, 'text'); ok('渲染正常')
+}
 {
   const searchTool = env.tools[0]
   const result = await searchTool.execute({ query: '端口' }, { signal: new AbortController().signal })

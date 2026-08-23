@@ -9,8 +9,8 @@
 
 | 能力 | hermes | dsh-mem0-plugins | 状态 |
 |------|--------|------------------|------|
-| 用户消息进轮即后台预取 | `on_turn_start` → 后台线程 | `agent/inbox/claimed` → 异步 promise | ✅ 对齐 |
-| 召回热等待 | `_PREFETCH_WAIT_SECS=15`，超时放行不阻塞 | `recallWaitMs=15000`，assemble 瀑布 race | ✅ 对齐 |
+| 用户消息进轮即后台预取 | `on_turn_start` → 后台线程 | **不做**（平台时序约束：assemble 在消息回显前，等待=卡回显；见「平台时序约束」节） | ⚖️ 架构差异 |
+| 召回热等待 | `_PREFETCH_WAIT_SECS=15`，超时放行不阻塞 | **无**（取消等待注入）；usage 节引导模型先调 `mem0_search`，工具卡呈现召回动作 | ⚖️ 显式化 |
 | 长文本查询蒸馏 | `_distill_query`：≤500 直通 / 8000 截断 / 本地小模型提炼意图 | `src/distill.js` 全套移植 | ✅ 对齐 |
 | 蒸馏端点/模型 | 生产 env：Qwen3.5-9B @10.220.0.35:8090/v1, key=devops | 同款默认值，设置卡可改 | ✅ 对齐 |
 | 蒸馏单次超时 | 生产 env `HERMES_DISTILL_TIMEOUT_S=90`（代码默认 30s） | 默认 **90000ms**（对齐生产值） | ✅ 已补齐 |

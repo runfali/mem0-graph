@@ -137,11 +137,11 @@ exportsRef.apply(ctx)
 const dict = registeredLocales.get('mem0')
 assert.ok(dict, 'locale 词典已注册'); ok('locale[mem0] 注册')
 assert.ok(dict.zh['card.title'] && dict.en['card.title']); ok('zh/en 卡片标题齐备')
-for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'topK', 'rerank', 'recallEnabled', 'recallWaitMs', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs', 'feedbackEnabled']) {
+for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'topK', 'rerank', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs', 'feedbackEnabled']) {
   assert.ok(dict.zh['field.' + key], '缺少 field.' + key)
   assert.ok(dict.zh['hint.' + key], '缺少 hint.' + key)
 }
-ok('30 个字段的 label/hint 文案全覆盖')
+ok('27 个字段的 label/hint 文案全覆盖')
 
 assert.equal(slotRegistrations.length, 1); ok('settings.plugin.item 槽位注册 ×1')
 const { def, component } = slotRegistrations[0].reg

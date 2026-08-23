@@ -1,17 +1,21 @@
 /**
  * dsh-mem0-plugins — Mem0 持久记忆 bundle 插件（Host 半）。
  *
- * 把 hermes mem0 插件的「全自动记忆」移植到 DSH：
+ * 把 hermes mem0 插件的「自动记忆」移植到 DSH：
  *
- * 1. 自动召回：`agent/inbox/claimed` 时后台预取语义搜索；`system-prompt/assemble`
- *    瀑布里对在途结果做有界等待，命中则把「Mem0 Memory」事实块推入系统提示。
- * 2. 使用说明：常驻 prompt section 引导模型主动调用 mem0_search（多角度多跳）。
- * 3. 自动写入：`session/event` 按 source.kind 捕获真人输入与模型回复；
- *    `agent/turn-stopping` 出队入潮浪并忆缓冲，合并为一次 infer:true 批量写入，
- *    服务端 LLM 抽取事实。纯 JSON 消息替换占位符防污染。
- * 4. 四个工具：mem0_search / mem0_add / mem0_update / mem0_delete；
+ * 1. 工具驱动召回：使用说明节强引导模型在回答一切依赖记忆的问题前先调
+ *    `mem0_search`（UI 工具卡即召回动作的可见呈现）；工具内部先蒸馏长文本
+ *    提炼检索意图（超时/双飞/漂移防护/失败回退原文），再语义搜索。
+ * 2. 自动写入：`session/event` 按 source.kind 捕获真人输入与模型回复；
+ *    claimed/turn-stopping 配对出队入潮浪并忆缓冲，合并为一次 infer:true
+ *    批量写入，服务端 LLM 抽取事实。纯 JSON 消息替换占位符防污染。
+ * 3. 四个工具：mem0_search / mem0_add / mem0_update / mem0_delete；
  *    update/delete 后 best-effort 上报 /evolve/feedback。
- * 5. 可靠性：熔断器、有界队列、连接级重试、dispose 兜底冲刷。
+ * 4. 可靠性：熔断器、有界队列、连接级重试、dispose 兜底冲刷。
+ *
+ * 召回形态说明：dsh 平台在「消息回显」后没有内容注入钩子（详见
+ * docs/COMPARISON.md「平台时序约束」），所以召回走显式工具链路而非后台注入——
+ * 模型先调 mem0_search，工具卡让召回动作对用户可见。
  *
  * 设置命名空间 mem0 与浏览器半共享；设置页改动即时生效（applies=live）。
  */
@@ -21,7 +25,6 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
 import { distillQuery } from './distill.js'
-import { isTrivialPrompt } from './guards.js'
 
 /** Cordis 插件短名（路由/日志用）。 */
 export const name = 'mem0'
@@ -41,8 +44,6 @@ export const Config = z.object({
   agentId: z.string().default('dsh'),
   topK: z.number().step(1).min(1).max(50).default(10),
   rerank: z.boolean().default(false),
-  recallEnabled: z.boolean().default(true),
-  recallWaitMs: z.number().step(1).min(0).max(120000).default(0),
   distillEnabled: z.boolean().default(true),
   distillMinChars: z.number().step(1).min(1).max(100000).default(500),
   distillInputMaxChars: z.number().step(1).min(200).max(200000).default(8000),
@@ -83,24 +84,6 @@ function textOfBlocks(blocks) {
     .trim()
 }
 
-function sleep(ms, signal) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (signal) signal.removeEventListener('abort', onAbort)
-      resolve(null)
-    }, ms)
-    const onAbort = () => {
-      clearTimeout(timer)
-      resolve(null)
-    }
-    if (signal) {
-      if (signal.aborted === true) onAbort()
-      else signal.addEventListener('abort', onAbort, { once: true })
-    }
-  })
-}
-
-/** 工具统一输出形状：{ok:true,data} | {ok:false,error}——单一 schema 可校验。 */
 function toolOk(data) {
   return { ok: true, ...(data === undefined ? {} : { data }) }
 }
@@ -144,8 +127,6 @@ export function apply(ctx, config = {}) {
       agentId: String(value.agentId || '').trim() || 'dsh',
       topK: clampInt(value.topK, 1, 50, 10),
       rerank: value.rerank === true,
-      recallEnabled: value.recallEnabled !== false,
-      recallWaitMs: clampInt(value.recallWaitMs, 0, 120000, 0),
       distillEnabled: value.distillEnabled !== false,
       distillMinChars: clampInt(value.distillMinChars, 1, 100000, 500),
       distillInputMaxChars: clampInt(value.distillInputMaxChars, 200, 200000, 8000),
@@ -184,49 +165,6 @@ export function apply(ctx, config = {}) {
   const clientFor = (s) =>
     new Mem0Client({ host: s.host, apiKey: s.apiKey, timeoutMs: s.requestTimeoutMs, breaker })
 
-  // ---------------------------------------------------------------------------
-  // 自动召回：claimed 预取 + assemble 瀑布注入
-  // ---------------------------------------------------------------------------
-  /** sessionId → { query, promise }；注入时消费一次即删。 */
-  const pendingRecall = new Map()
-
-  const startPrefetch = (sessionId, query) => {
-    const existing = pendingRecall.get(sessionId)
-    if (existing && existing.query === query) return
-    const s = spec()
-    const state = { query }
-    const promise = (async () => {
-      const distilled = await distillQuery(query, {
-        enabled: s.distillEnabled,
-        minChars: s.distillMinChars,
-        inputMaxChars: s.distillInputMaxChars,
-        baseUrl: s.distillBaseUrl,
-        apiKey: s.distillApiKey,
-        model: s.distillModel,
-        timeoutMs: s.distillTimeoutMs,
-        retryAfterMs: s.distillRetryAfterMs
-      }, (info) => log.debug(info))
-      const latest = spec() // 蒸馏可能耗时 90s，期间配置或已热改——以最新为准
-      return clientFor(latest).search({ query: distilled, filters: { user_id: latest.userId }, topK: latest.topK, rerank: latest.rerank })
-    })()
-      .then((results) => {
-        const lines = (results || [])
-          .map((item) => (item && typeof item.memory === 'string' ? item.memory.trim() : ''))
-          .filter(Boolean)
-        return lines.length > 0 ? lines.map((line) => '- ' + line).join('\n') : ''
-      })
-      .then((text) => {
-        state.settled = true
-        return text
-      })
-      .catch((error) => {
-        log.debug('recall prefetch failed: ' + String((error && error.message) || error))
-        return ''
-      })
-    state.promise = promise
-    pendingRecall.set(sessionId, state)
-  }
-
   // 全局监听 agent/created（载荷带 agent，实测确认），在 agent 级 scoped ctx 上注册
   // claimed/turn-stopping——这两个事件的运行时载荷仅有 {message,turn}/{turn,signal}，
   // 没有 agent 字段（dsh-agent-loop emit 实现与 .d.ts 声明漂移），会话标识从闭包拿。
@@ -240,19 +178,14 @@ export function apply(ctx, config = {}) {
     const sessionId = agent.id
     agent.ctx.on('agent/inbox/claimed', (claimed) => {
       try {
-        const s = spec()
+        // 仅记录真人输入文本供 turn-stopping 写入配对（召回已改为工具驱动，不再预取）
         const claimedText = textOfBlocks(claimed.message && claimed.message.content)
         if (claimedText) {
           userByTurn.set(sessionId + '\u0000' + claimed.turn, claimedText)
           capMap(userByTurn)
         }
-        if (!s.enabled || !s.recallEnabled || !s.host) return
-        if (breaker.open) return
-        if (!claimedText || claimedText.length < 2) return
-        if (isTrivialPrompt(claimedText)) return
-        startPrefetch(sessionId, claimedText)
       } catch (error) {
-        log.debug('prefetch setup failed: ' + String((error && error.message) || error))
+        log.debug('claimed capture failed: ' + String((error && error.message) || error))
       }
     })
     agent.ctx.on('agent/turn-stopping', (stopping) => {
@@ -279,46 +212,6 @@ export function apply(ctx, config = {}) {
       }
     })
   }), 'mem0:agent-hooks')
-  const pushRecallSection = (assembly, recalled) => {
-    assembly.sections.push({
-      name: 'mem0:recall',
-      text:
-        '# Mem0 Memory\n' +
-        '[System note: the following is recalled memory context, NOT new user input. ' +
-        'Treat it as authoritative reference data — your persistent memory of this user.]\n' +
-        'Relevant memories recalled for the current question:\n' + recalled
-    })
-  }
-
-  ctx.effect(() => ctx.on('system-prompt/assemble', async (assembly, context, next) => {
-    try {
-      const agent = context && context.agent
-      const s = spec()
-      if (agent && s.enabled && s.recallEnabled && s.host) {
-        const pending = pendingRecall.get(agent.id)
-        if (pending) {
-          pendingRecall.delete(agent.id)
-          if (pending.settled === true) {
-            // 预取已完成：注入零延迟（promise 已 settle，无网络等待）
-            const recalled = await pending.promise
-            if (recalled) pushRecallSection(assembly, recalled)
-          } else if (s.recallWaitMs > 0) {
-            // 显式开启等待窗口（默认 0 = 绝不阻塞消息显示与首 token；
-            // 未完成的召回由 usage 节引导模型 mem0_search 工具兜底）
-            const winner = await Promise.race([
-              pending.promise.then((text) => ({ text })),
-              sleep(s.recallWaitMs, context.signal)
-            ])
-            if (winner && winner.text) pushRecallSection(assembly, winner.text)
-          }
-        }
-      }
-    } catch (error) {
-      log.debug('recall injection skipped: ' + String((error && error.message) || error))
-    }
-    return next()
-  }), 'mem0:recall-inject')
-
   // ---------------------------------------------------------------------------
   // 自动写入：session/event 捕获配对 + turn-stopping 出队 + 潮浪并忆
   // ---------------------------------------------------------------------------
@@ -399,7 +292,6 @@ export function apply(ctx, config = {}) {
     timer.unref && timer.unref()
     return () => {
       clearInterval(timer)
-      pendingRecall.clear()
       lastUserBySession.clear()
       userByTurn.clear()
       lastAssistantByTurn.clear()
@@ -420,9 +312,11 @@ export function apply(ctx, config = {}) {
       return (
         '# Mem0 Memory\n' +
         'Active (self-hosted). User: ' + s.userId + '.' + rerankNote + '\n' +
-        'You have persistent memory of this user from past conversations. Call mem0_search ' +
-        'before answering anything that could depend on prior context (preferences, facts, ' +
-        'history, people, projects, past decisions) — do not rely on the chat window alone.\n' +
+        'You have persistent memory of this user from past conversations. ' +
+        'BEFORE answering anything that could depend on prior context (preferences, facts, ' +
+        'history, people, projects, past decisions), you MUST call mem0_search first — ' +
+        'do not rely on the chat window alone, and never claim there is no memory without ' +
+        'having searched.\n' +
         'For multi-part or multi-hop questions, run several searches with different wording ' +
         'and follow up on what earlier results reveal; one search is rarely enough.\n' +
         'Tools: mem0_search to find memories, mem0_add to store durable facts verbatim the ' +
@@ -486,8 +380,20 @@ export function apply(ctx, config = {}) {
       try {
         ready(s)
         if (breaker.open) return toolFail('Mem0 temporarily unavailable (repeated failures); will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
+        // 工具内蒸馏：query 超过阈值（用户可能把整段日志/长文直接丢给搜索）先提炼
+        // 检索意图（超时/双飞/漂移防护/失败回退原文全套保留），再语义搜索
+        const query = await distillQuery(args.query, {
+          enabled: s.distillEnabled,
+          minChars: s.distillMinChars,
+          inputMaxChars: s.distillInputMaxChars,
+          baseUrl: s.distillBaseUrl,
+          apiKey: s.distillApiKey,
+          model: s.distillModel,
+          timeoutMs: s.distillTimeoutMs,
+          retryAfterMs: s.distillRetryAfterMs
+        }, (info) => log.debug(info))
         const results = await clientFor(s).search({
-          query: args.query,
+          query,
           filters: { user_id: s.userId },
           topK: args.top_k !== undefined ? clampInt(args.top_k, 1, 50, s.topK) : s.topK,
           rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
