@@ -154,7 +154,6 @@ cython_debug/
 # AI code intelligence tool outputs
 graphify-out/
 .code-review-graph/
-docs/evolve-observability-plan.md
-docs/temporal-voice-plan.md
-docs/memory-type-refine-plan.md
-llm-fallback-plan.md
+
+# 计划类/工作笔记文档：保留本地、跳过提交（2026-08-23 发哥拍板）
+docs/*-plan.md
