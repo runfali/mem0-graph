@@ -387,8 +387,8 @@ bundle 插件 [`plugins/dsh-mem0-plugins/`](plugins/dsh-mem0-plugins/README.md)�
 
 | 能力 | 说明 |
 |------|------|
-| 自动召回 | 用户消息进轮即后台语义搜索，命中则注入系统提示；长文本先经本地小模型蒸馏成检索意图再搜索（防打爆服务端），纯问候/确认类输入零网络开销 |
-| 自动写入 | 每轮对话交给服务端 LLM 抽取事实；潮浪并忆把同会话短对话合并成批量写入摊薄调用，纯 JSON 工具输出剥除防污染，中断轮次不入记忆 |
+| 工具驱动召回 | 每轮第一步注入「必须先调 mem0_search」提醒（琐碎轮跳过），模型先搜索再作答——工具卡在 UI 可见召回动作；长查询先经本地小模型蒸馏成检索意图（防打爆服务端），超时/双飞/漂移防护/失败回退原文全套 |
+| 自动写入 | 每轮对话交给服务端 LLM 抽取事实；潮浪并忆把同会话短对话合并成批量写入摊薄调用（收益日志可见），纯 JSON 工具输出剥除防污染，中断轮次不入记忆 |
 | 四个工具 | `mem0_search` / `mem0_add` / `mem0_update` / `mem0_delete`；改错与遗忘自动上报 `/evolve/feedback` 参与 salience 进化 |
 | 可靠性 | 300s HTTP 总闸、熔断器（5 连败 120s 冷却）、有界队列丢最旧、连接级重试、失败一律回退原文 |
 
@@ -399,8 +399,8 @@ dsh plugin --profile web add /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
 # 卸载：dsh plugin --profile web remove dsh-mem0-plugins
 ```
 
-装好后在 dsh「设置 → 插件配置 → Mem0 记忆」填写 server 地址与 API Key 并打开开关；
-召回/蒸馏/合并/熔断等全部参数可在设置页热调（即时生效，无需重启）。完整配置项与
+装好后在 dsh「设置 → 插件配置 → Mem0 记忆」填写 server 地址与 API Key 即可（enabled 默认开启）；
+蒸馏/强制提醒/合并/熔断等全部参数可在设置页热调（即时生效，无需重启）。完整配置项与
 排障见插件 [README](plugins/dsh-mem0-plugins/README.md)。
 
 

@@ -172,9 +172,12 @@ export class TidalCoalescer {
       this.stats.batches += 1;
       this.#countTurns(bucket.sessionId, turns);
       if (this.log.info) {
+        // 累计可观测摘要：省下调用/丢最旧/JSON 剥除 计数随每次合并冲刷可见
         this.log.info('mem0 coalesced ' + turns + ' turn(s) into 1 write (session=' + (bucket.sessionId || '<empty>') +
           ', saved ' + Math.max(0, turns - 1) + ' call(s), chars=' + bucket.chars +
-          (trigger ? ', trigger=' + trigger : '') + ')');
+          (trigger ? ', trigger=' + trigger : '') +
+          '; totals: batches=' + this.stats.batches + ' savedCalls=' + this.stats.savedCalls +
+          ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized + ')');
       }
     } catch (error) {
       if (this.log.warn) {

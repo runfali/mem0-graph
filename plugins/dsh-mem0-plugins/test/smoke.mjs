@@ -329,23 +329,27 @@ console.log('== 第一步强制搜索提醒 ==')
   const nextBase = async () => ({ kind: 'enter', messages: [{ role: 'user', content: [{ type: 'text', text: '原始问题' }], source: { kind: 'user' } }] })
 
   // 第一步（运行时 step=1）+ 非琐碎 → 注入提醒
-  const d1 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '我的记忆里有部署信息吗' }] }], turn: 1, step: 1, signal: null }, nextBase)
+  const d1 = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '我的记忆里有部署信息吗' }], source: { kind: 'user' } }], turn: 1, step: 1, signal: null }, nextBase)
   assert.equal(d1.kind, 'enter')
   assert.equal(d1.messages.length, 2); ok('第一步注入提醒消息')
   assert.equal(d1.messages[1].source.kind, 'plugin'); ok('提醒为 plugin-source（不写入记忆、UI 系统样式）')
   assert.match(d1.messages[1].content[0].text, /mem0_search/); ok('提醒文本包含 mem0_search 指令')
 
-  // 同一轮后续步（step=2）→ 不重复提醒
-  const d2 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '继续' }] }], turn: 1, step: 2, signal: null }, nextBase)
-  assert.equal(d2.messages.length, 1); ok('step>1 不重复提醒')
+  // 同一 turn 内后段新输入（step=5，携带真人 user 消息）→ 也要提醒
+  const d2 = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '另外还有个问题想问你' }], source: { kind: 'user' } }], turn: 1, step: 5, signal: null }, nextBase)
+  assert.equal(d2.messages.length, 2); ok('同 turn 后段新输入同样注入提醒')
+
+  // 工具回执步（无真人 user 消息）→ 不打扰
+  const d2b = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: 'tool result' }], source: { kind: 'tool', callId: 'c1' } }], turn: 1, step: 6, signal: null }, nextBase)
+  assert.equal(d2b.messages.length, 1); ok('工具回执步不重复提醒')
 
   // 琐碎输入 → 跳过提醒
-  const d3 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '好的' }] }], turn: 2, step: 1, signal: null }, nextBase)
+  const d3 = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '好的' }], source: { kind: 'user' } }], turn: 2, step: 1, signal: null }, nextBase)
   assert.equal(d3.messages.length, 1); ok('琐碎轮（好的）不打扰')
 
   // 开关关闭 → 不注入
   env.setScope({ ...env.getScope(), forceRecallStep: false })
-  const d4 = await preSteps[0]({ messages: [{ content: [{ type: 'text', text: '查一下端口' }] }], turn: 3, step: 1, signal: null }, nextBase)
+  const d4 = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '查一下端口' }], source: { kind: 'user' } }], turn: 3, step: 1, signal: null }, nextBase)
   assert.equal(d4.messages.length, 1); ok('forceRecallStep=off 不注入')
   env.setScope({ ...env.getScope(), forceRecallStep: true })
 }

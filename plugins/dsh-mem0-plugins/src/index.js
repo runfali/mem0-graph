@@ -117,11 +117,19 @@ export function apply(ctx, config = {}) {
     }
   })
 
-  /** 带前缀的结构化日志（保持 ctx.logger 方法调用形式）。 */
+  /** 带前缀的结构化日志（保持 ctx.logger 方法调用形式）。
+   * dsh 的 LoggerService 默认不透出 stdout——用户可见信息（潮浪合并收益、
+   * 熔断告警）需双通道：ctx.logger 落内部日志 + console.log 直出宿主 stdout */
   const log = {
     debug: (message) => ctx.logger.debug('[dsh-mem0] ' + message),
-    info: (message) => ctx.logger.info('[dsh-mem0] ' + message),
-    warn: (message) => ctx.logger.warn('[dsh-mem0] ' + message)
+    info: (message) => {
+      ctx.logger.info('[dsh-mem0] ' + message)
+      console.log('[dsh-mem0] ' + message)
+    },
+    warn: (message) => {
+      ctx.logger.warn('[dsh-mem0] ' + message)
+      console.warn('[dsh-mem0] ' + message)
+    }
   }
 
   const breaker = new CircuitBreaker()
@@ -205,11 +213,13 @@ export function apply(ctx, config = {}) {
         const s = spec()
         if (!s.enabled || !s.host) return decision
         if (s.forceRecallStep !== true) return decision
-        // 运行时第一步的 step=1（dsh-agent-loop：phase.step 初始 0，preStep 传 step+1）；
-        // 每轮只在第一步注入，工具调用后的后续步（step>=2）不重复打扰
-        if (payload.step !== 1) return decision
-        const firstText = textOfBlocks(payload.messages && payload.messages[0] && payload.messages[0].content)
-        if (isTrivialPrompt(firstText)) return decision // 琐碎轮（问候/确认）不打扰
+        // 按「该 step 是否携带新的真人输入」注入而非按 step 编号：
+        // 同一 turn 内连续多段用户消息（step=1,5,9…）每一段都要提醒；
+        // 工具回执步（payload.messages 无 kind=user）不打扰
+        const freshUser = (payload.messages || []).find((m) => m && m.source && m.source.kind === 'user')
+        if (!freshUser) return decision
+        const firstText = textOfBlocks(freshUser.content)
+        if (isTrivialPrompt(firstText)) return decision // 琐碎输入（问候/确认）不打扰
         const reminder = {
           role: 'user',
           content: [{ type: 'text', text: RECALL_REMINDER }],
