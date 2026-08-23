@@ -1,0 +1,514 @@
+/**
+ * dsh-mem0-plugins — Mem0 持久记忆 bundle 插件（Host 半）。
+ *
+ * 把 hermes mem0 插件的「全自动记忆」移植到 DSH：
+ *
+ * 1. 自动召回：`agent/inbox/claimed` 时后台预取语义搜索；`system-prompt/assemble`
+ *    瀑布里对在途结果做有界等待，命中则把「Mem0 Memory」事实块推入系统提示。
+ * 2. 使用说明：常驻 prompt section 引导模型主动调用 mem0_search（多角度多跳）。
+ * 3. 自动写入：`session/event` 按 source.kind 捕获真人输入与模型回复；
+ *    `agent/turn-stopping` 出队入潮浪并忆缓冲，合并为一次 infer:true 批量写入，
+ *    服务端 LLM 抽取事实。纯 JSON 消息替换占位符防污染。
+ * 4. 四个工具：mem0_search / mem0_add / mem0_update / mem0_delete；
+ *    update/delete 后 best-effort 上报 /evolve/feedback。
+ * 5. 可靠性：熔断器、有界队列、连接级重试、dispose 兜底冲刷。
+ *
+ * 设置命名空间 mem0 与浏览器半共享；设置页改动即时生效（applies=live）。
+ */
+import z from '@deepseek-ai/schemastery'
+import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { CircuitBreaker, Mem0Client, isClientError } from './backend.js'
+import { TidalCoalescer } from './coalesce.js'
+
+/** Cordis 插件短名（路由/日志用）。 */
+export const name = 'mem0'
+
+/** Settings 命名空间（浏览器卡片与 host 共用同一字符串）。 */
+export const MEM0_SETTINGS_NAMESPACE = settingsNamespace('mem0')
+
+/** 需要工具注册表与提示词注册表就绪再 apply。 */
+export const inject = ['tools', 'systemPrompt']
+
+/** 设置命名空间的字段模式（也是 Settings 页面渲染/校验的依据）。 */
+export const Config = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('http://127.0.0.1:8888'),
+  apiKey: z.string().default(''),
+  userId: z.string().default('dsh-user'),
+  agentId: z.string().default('dsh'),
+  topK: z.number().step(1).min(1).max(50).default(10),
+  rerank: z.boolean().default(false),
+  recallEnabled: z.boolean().default(true),
+  recallWaitMs: z.number().step(1).min(0).max(60000).default(8000),
+  syncEnabled: z.boolean().default(true),
+  feedbackEnabled: z.boolean().default(true),
+  coalesceEnabled: z.boolean().default(true),
+  coalesceIdleMs: z.number().step(1).min(500).max(300000).default(5000),
+  coalesceWindowMs: z.number().step(1).min(1000).max(600000).default(15000),
+  coalesceMaxTurns: z.number().step(1).min(1).max(50).default(5),
+  coalesceMaxChars: z.number().step(1).min(200).max(200000).default(4000),
+  fastpathChars: z.number().step(1).min(200).max(200000).default(2000),
+  queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
+  breakerThreshold: z.number().step(1).min(1).max(100).default(5),
+  breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
+  requestTimeoutMs: z.number().step(1).min(1000).max(600000).default(60000)
+})
+
+const METADATA_CHANNEL = 'dsh'
+
+/** 数值防御性收敛（外部编辑 settings.yaml 时兜底）。 */
+function clampInt(value, min, max, fallback) {
+  const n = Math.trunc(Number(value))
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+function textOfBlocks(blocks) {
+  if (!Array.isArray(blocks)) return ''
+  return blocks
+    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 工具统一输出形状：{ok:true,data} | {ok:false,error}——单一 schema 可校验。 */
+function toolOk(data) {
+  return { ok: true, ...(data === undefined ? {} : { data }) }
+}
+
+function toolFail(error) {
+  return { ok: false, error: String((error && error.message) || error) }
+}
+
+/**
+ * Cordis apply：注册设置命名空间、四个 mem0 工具、自动召回与自动写回接线。
+ * @param {object} ctx - cordis 上下文（已注入 tools/systemPrompt）。
+ * @param {object} config - composition base 层配置（patch 行的 config）。
+ */
+export function apply(ctx, config = {}) {
+  let current = () => config
+  installSettingsSection(ctx, MEM0_SETTINGS_NAMESPACE, Config, config, {
+    setSource: (source) => {
+      current = source
+    },
+    onChange: () => {
+      // 各消费点每 tick / 每次调用读取 current()，无需主动刷新
+    }
+  })
+
+  /** 带前缀的结构化日志（保持 ctx.logger 方法调用形式）。 */
+  const log = {
+    debug: (message) => ctx.logger.debug('[dsh-mem0] ' + message),
+    info: (message) => ctx.logger.info('[dsh-mem0] ' + message),
+    warn: (message) => ctx.logger.warn('[dsh-mem0] ' + message)
+  }
+
+  const breaker = new CircuitBreaker()
+  /** 归一化后的当前生效配置。 */
+  const spec = () => {
+    const value = current() || {}
+    return {
+      enabled: value.enabled === true,
+      host: String(value.host || '').trim(),
+      apiKey: String(value.apiKey || '').trim(),
+      userId: String(value.userId || '').trim() || 'dsh-user',
+      agentId: String(value.agentId || '').trim() || 'dsh',
+      topK: clampInt(value.topK, 1, 50, 10),
+      rerank: value.rerank === true,
+      recallEnabled: value.recallEnabled !== false,
+      recallWaitMs: clampInt(value.recallWaitMs, 0, 60000, 8000),
+      syncEnabled: value.syncEnabled !== false,
+      feedbackEnabled: value.feedbackEnabled !== false,
+      coalesceEnabled: value.coalesceEnabled !== false,
+      coalesceIdleMs: clampInt(value.coalesceIdleMs, 500, 300000, 5000),
+      coalesceWindowMs: clampInt(value.coalesceWindowMs, 1000, 600000, 15000),
+      coalesceMaxTurns: clampInt(value.coalesceMaxTurns, 1, 50, 5),
+      coalesceMaxChars: clampInt(value.coalesceMaxChars, 200, 200000, 4000),
+      fastpathChars: clampInt(value.fastpathChars, 200, 200000, 2000),
+      queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
+      breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
+      breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
+      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 600000, 60000)
+    }
+  }
+
+  // 配置变化时同步熔断参数（阈值/冷却时间可热调）
+  ctx.effect(() => ctx.on('settings/updated', (ns) => {
+    if (ns !== MEM0_SETTINGS_NAMESPACE) return
+    const s = spec()
+    breaker.threshold = s.breakerThreshold
+    breaker.cooldownMs = s.breakerCooldownMs
+  }), 'mem0:breaker-tuning')
+
+  const ready = (s) => {
+    if (!s.enabled) throw new Error('Mem0 插件未启用：请到「设置 → 插件配置 → Mem0 记忆」打开开关')
+    if (!s.host) throw new Error('Mem0 server 地址未配置：请到「设置 → 插件配置 → Mem0 记忆」填写 URL')
+  }
+
+  const clientFor = (s) =>
+    new Mem0Client({ host: s.host, apiKey: s.apiKey, timeoutMs: s.requestTimeoutMs, breaker })
+
+  // ---------------------------------------------------------------------------
+  // 自动召回：claimed 预取 + assemble 瀑布注入
+  // ---------------------------------------------------------------------------
+  /** sessionId → { query, promise }；注入时消费一次即删。 */
+  const pendingRecall = new Map()
+
+  const startPrefetch = (sessionId, query) => {
+    const existing = pendingRecall.get(sessionId)
+    if (existing && existing.query === query) return
+    const s = spec()
+    const promise = clientFor(s)
+      .search({ query, filters: { user_id: s.userId }, topK: s.topK, rerank: s.rerank })
+      .then((results) => {
+        const lines = (results || [])
+          .map((item) => (item && typeof item.memory === 'string' ? item.memory.trim() : ''))
+          .filter(Boolean)
+        return lines.length > 0 ? lines.map((line) => '- ' + line).join('\n') : ''
+      })
+      .catch((error) => {
+        log.debug('recall prefetch failed: ' + String((error && error.message) || error))
+        return ''
+      })
+    pendingRecall.set(sessionId, { query, promise })
+  }
+
+  ctx.effect(() => ctx.on('agent/inbox/claimed', (payload) => {
+    try {
+      const s = spec()
+      if (!s.enabled || !s.recallEnabled || !s.host) return
+      if (breaker.open) return
+      const query = textOfBlocks(payload.message && payload.message.content)
+      if (!query || query.length < 2) return
+      startPrefetch(payload.agent.id, query)
+    } catch (error) {
+      log.debug('prefetch setup failed: ' + String((error && error.message) || error))
+    }
+  }), 'mem0:prefetch-listener')
+
+  ctx.effect(() => ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    try {
+      const agent = context && context.agent
+      const s = spec()
+      if (agent && s.enabled && s.recallEnabled && s.host) {
+        const pending = pendingRecall.get(agent.id)
+        if (pending) {
+          pendingRecall.delete(agent.id)
+          const winner = await Promise.race([
+            pending.promise.then((text) => ({ text })),
+            sleep(s.recallWaitMs).then(() => null)
+          ])
+          const recalled = winner ? winner.text : ''
+          if (recalled) {
+            assembly.sections.push({
+              name: 'mem0:recall',
+              text: '# Mem0 Memory\nRelevant memories recalled for the current question:\n' + recalled
+            })
+          }
+        }
+      }
+    } catch (error) {
+      log.debug('recall injection skipped: ' + String((error && error.message) || error))
+    }
+    return next()
+  }), 'mem0:recall-inject')
+
+  // ---------------------------------------------------------------------------
+  // 自动写入：session/event 捕获配对 + turn-stopping 出队 + 潮浪并忆
+  // ---------------------------------------------------------------------------
+  const coalescer = new TidalCoalescer({
+    resolve: () => {
+      const s = spec()
+      return {
+        enabled: s.coalesceEnabled,
+        idleMs: s.coalesceIdleMs,
+        windowMs: s.coalesceWindowMs,
+        maxTurns: s.coalesceMaxTurns,
+        maxChars: s.coalesceMaxChars,
+        fastpathChars: s.fastpathChars
+      }
+    },
+    queueMaxLen: 50,
+    addFn: async ({ userId, messages }) => {
+      const s = spec()
+      await clientFor(s).addMessages(messages, {
+        userId: s.userId || userId,
+        agentId: s.agentId,
+        infer: true,
+        metadata: { channel: METADATA_CHANNEL }
+      })
+    },
+    log
+  })
+
+  /** 真人输入文本（按 session 覆盖）；助手回复文本（按 session+turn 覆盖）。 */
+  const CAP_LIMIT = 256
+  const lastUserBySession = new Map()
+  const lastAssistantByTurn = new Map()
+  const capMap = (map) => {
+    while (map.size > CAP_LIMIT) map.delete(map.keys().next().value)
+  }
+
+  ctx.effect(() => ctx.on('session/event', (session, event) => {
+    try {
+      if (event.type === 'user/message') {
+        const message = event.message
+        // 只认真人输入：plugin 注入的通知与 tool 回执虽是 user 角色，但不是用户的话
+        if (!message || !message.source || message.source.kind !== 'user') return
+        const text = textOfBlocks(message.content)
+        if (!text) return
+        lastUserBySession.set(session.id, text)
+        capMap(lastUserBySession)
+      } else if (event.type === 'assistant/message') {
+        const message = event.message
+        if (!message || !message.source || message.source.kind !== 'model') return
+        const text = textOfBlocks(message.content)
+        if (!text) return
+        lastAssistantByTurn.set(session.id + '\u0000' + event.turn, text)
+        capMap(lastAssistantByTurn)
+      }
+    } catch (error) {
+      log.debug('capture failed: ' + String((error && error.message) || error))
+    }
+  }), 'mem0:capture-listener')
+
+  ctx.effect(() => ctx.on('agent/turn-stopping', (payload) => {
+    try {
+      const s = spec()
+      const sessionId = payload.agent.id
+      const userText = lastUserBySession.get(sessionId) || ''
+      const assistantKey = sessionId + '\u0000' + payload.turn
+      const assistantText = lastAssistantByTurn.get(assistantKey) || ''
+      lastUserBySession.delete(sessionId)
+      lastAssistantByTurn.delete(assistantKey)
+      if (!s.enabled || !s.syncEnabled || !s.host) return
+      if (!userText && !assistantText) return
+      if (breaker.open) return
+      coalescer.enqueue({ userId: s.userId, sessionId, userContent: userText, assistantContent: assistantText })
+    } catch (error) {
+      log.debug('enqueue failed: ' + String((error && error.message) || error))
+    }
+  }), 'mem0:sync-listener')
+
+  // 冲刷节拍：排空队列 → 冲刷到期桶；dispose 时 clearInterval + 兜底冲刷全部桶
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      try {
+        coalescer.drain()
+        coalescer.flushDue()
+      } catch (error) {
+        log.debug('coalesce tick failed: ' + String((error && error.message) || error))
+      }
+    }, 300)
+    timer.unref && timer.unref()
+    return () => {
+      clearInterval(timer)
+      pendingRecall.clear()
+      lastUserBySession.clear()
+      lastAssistantByTurn.clear()
+      coalescer.flushAll('dispose')
+    }
+  }, 'mem0:coalesce-tick')
+
+  // ---------------------------------------------------------------------------
+  // 常驻使用说明节（enabled 且已配置时出现）
+  // ---------------------------------------------------------------------------
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: 'mem0:usage',
+    order: 150,
+    text: () => {
+      const s = spec()
+      if (!s.enabled || !s.host) return ''
+      const rerankNote = s.rerank ? ' Reranking is enabled for searches.' : ''
+      return (
+        '# Mem0 Memory\n' +
+        'Active (self-hosted). User: ' + s.userId + '.' + rerankNote + '\n' +
+        'You have persistent memory of this user from past conversations. Call mem0_search ' +
+        'before answering anything that could depend on prior context (preferences, facts, ' +
+        'history, people, projects, past decisions) — do not rely on the chat window alone.\n' +
+        'For multi-part or multi-hop questions, run several searches with different wording ' +
+        'and follow up on what earlier results reveal; one search is rarely enough.\n' +
+        'Tools: mem0_search to find memories, mem0_add to store durable facts verbatim the ' +
+        'moment the user states them, mem0_update and mem0_delete to correct or forget by ID.'
+      )
+    }
+  }), 'mem0:usage-section')
+
+  // ---------------------------------------------------------------------------
+  // 四个模型工具
+  // ---------------------------------------------------------------------------
+  const TOOL_OUTPUT_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      ok: { type: 'boolean', required: true },
+      error: { type: 'string' },
+      data: { type: 'json' }
+    }
+  }
+
+  const renderToolValue = (value) => {
+    if (!value || value.ok !== true) {
+      return 'Error: ' + ((value && value.error) || 'unknown error')
+    }
+    const data = value.data
+    if (data === undefined || data === null) return 'OK'
+    if (typeof data === 'string') return data
+    try {
+      return JSON.stringify(data, null, 2)
+    } catch {
+      return String(data)
+    }
+  }
+
+  const registerTool = (definition) => {
+    ctx.tools.register(definition)
+  }
+
+  // -- mem0_search ------------------------------------------------------------
+  registerTool(defineTool({
+    name: 'mem0_search',
+    description:
+      "Search the user's persistent memories by meaning; returns facts ranked by relevance. " +
+      'Use this before answering any question that may depend on what you know about the user ' +
+      '(preferences, facts, history, people, projects, past decisions). For multi-part or ' +
+      'multi-hop questions, call it several times — vary the wording and run follow-up searches ' +
+      'on what earlier results reveal; one search is rarely enough.',
+    parameters: {
+      query: { type: 'string', required: true, description: 'What to search for.' },
+      top_k: { type: 'integer', description: 'Max results (default from settings, max 50).' },
+      rerank: { type: 'boolean', description: 'Rerank results for relevance (server must have a reranker configured).' }
+    },
+    output: {
+      schema: TOOL_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+    },
+    timeoutMs: 90000,
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      const s = spec()
+      try {
+        ready(s)
+        if (breaker.open) return toolFail('Mem0 temporarily unavailable (repeated failures); will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
+        const results = await clientFor(s).search({
+          query: args.query,
+          filters: { user_id: s.userId },
+          topK: args.top_k !== undefined ? clampInt(args.top_k, 1, 50, s.topK) : s.topK,
+          rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
+          signal: exec.signal
+        })
+        if (!results || results.length === 0) return toolOk('No relevant memories found.')
+        return toolOk({
+          count: results.length,
+          results: results.map((item) => ({
+            id: item && item.id ? String(item.id) : '',
+            memory: item && typeof item.memory === 'string' ? item.memory : '',
+            score: item && typeof item.score === 'number' ? item.score : 0
+          }))
+        })
+      } catch (error) {
+        // 熔断计数由 Mem0Client 内部统一记录，这里不重复计
+        return toolFail(error)
+      }
+    }
+  }))
+
+  // -- mem0_add -----------------------------------------------------------------
+  registerTool(defineTool({
+    name: 'mem0_add',
+    description:
+      'Store a durable fact about the user, verbatim (no LLM extraction). Call this the moment ' +
+      'the user states a lasting preference, correction, decision, or personal detail worth ' +
+      "recalling on future turns — don't wait to be asked to remember. Skip transient chit-chat " +
+      "and facts you've already stored.",
+    parameters: {
+      content: { type: 'string', required: true, description: 'The fact to store.' }
+    },
+    output: {
+      schema: TOOL_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+    },
+    timeoutMs: 240000,
+    async execute(args, exec) {
+      const s = spec()
+      try {
+        ready(s)
+        if (breaker.open) return toolFail('Mem0 temporarily unavailable; will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
+        await clientFor(s).addMessages(
+          [{ role: 'user', content: args.content }],
+          { userId: s.userId, agentId: s.agentId, infer: false, metadata: { channel: METADATA_CHANNEL }, signal: exec.signal }
+        )
+        return toolOk('Fact stored.')
+      } catch (error) {
+        return toolFail(error)
+      }
+    }
+  }))
+
+  // -- mem0_update ---------------------------------------------------------------
+  registerTool(defineTool({
+    name: 'mem0_update',
+    description:
+      "Replace the text of an existing memory by its ID (take the ID from a mem0_search result). " +
+      'Use when a stored fact has changed or was wrong — correct it in place instead of adding a duplicate.',
+    parameters: {
+      memory_id: { type: 'string', required: true, description: 'Memory UUID to update.' },
+      text: { type: 'string', required: true, description: 'New text content.' }
+    },
+    output: {
+      schema: TOOL_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+    },
+    timeoutMs: 120000,
+    async execute(args, exec) {
+      const s = spec()
+      try {
+        ready(s)
+        const result = await clientFor(s).updateMemory(args.memory_id, args.text, exec.signal)
+        if (s.feedbackEnabled) {
+          void clientFor(s).reportFeedback(args.memory_id, 'correction', { source: 'auto', note: args.text }, log)
+        }
+        return toolOk(result.result || 'Memory updated.')
+      } catch (error) {
+        if (isClientError(error)) return toolFail('Memory not found: ' + args.memory_id)
+        return toolFail(error)
+      }
+    }
+  }))
+
+  // -- mem0_delete -----------------------------------------------------------------
+  registerTool(defineTool({
+    name: 'mem0_delete',
+    description:
+      'Delete a memory by its ID (take the ID from a mem0_search result). Use when a stored fact ' +
+      'is obsolete or the user asks you to forget it; prefer mem0_update if the fact merely changed.',
+    parameters: {
+      memory_id: { type: 'string', required: true, description: 'Memory UUID to delete.' }
+    },
+    output: {
+      schema: TOOL_OUTPUT_SCHEMA,
+      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+    },
+    timeoutMs: 120000,
+    async execute(args, exec) {
+      const s = spec()
+      try {
+        ready(s)
+        const result = await clientFor(s).deleteMemory(args.memory_id, exec.signal)
+        if (s.feedbackEnabled) {
+          void clientFor(s).reportFeedback(args.memory_id, 'useless', { source: 'auto' }, log)
+        }
+        return toolOk(result.result || 'Memory deleted.')
+      } catch (error) {
+        if (isClientError(error)) return toolFail('Memory not found: ' + args.memory_id)
+        return toolFail(error)
+      }
+    }
+  }))
+}
