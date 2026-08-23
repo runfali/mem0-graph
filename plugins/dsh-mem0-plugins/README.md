@@ -107,7 +107,9 @@ dsh plugin --profile web remove dsh-mem0-plugins
   详见 `docs/COMPARISON.md` 平台时序约束）；模型按 usage 引导先调 `mem0_search`，
   工具卡让「召回中」对用户可见，蒸馏/超时/熔断全套在工具内部生效；
 - **第一步强制提醒（方案 B，默认开）**：每轮第一步经 `agent/pre-step` 注入
-  plugin-source 提醒「必须先调 mem0_search」（UI 系统注记、不写记忆、琐碎轮跳过、
+  plugin-source 提醒「必须先调 mem0_search」（`form:'notice'` 注记——UI 消息区显示
+  「上下文注入 · dsh-mem0-plugins · 【记忆提醒】回答前必须先调 mem0_search」，
+  折叠行即直接可见，展开可见模型侧全文；不写记忆、琐碎轮跳过、
   开关 `forceRecallStep` 可关）——把「先搜再答」从模型自觉升级为流程默认。
 - **琐碎输入跳过**（`src/guards.js`，词表扩充成果保留，暂作复用库）：纯问候/确认/
   斜杠命令词表三分类等价，只整串匹配、带正文永不误伤；
@@ -142,6 +144,31 @@ dsh plugin --profile web remove dsh-mem0-plugins
   不会造成重复写入）。
 - **有界队列**：待写队列满（默认 50）丢最旧，防止服务端长时间不可用时内存膨胀。
 - **兜底冲刷**：插件 dispose 时冲刷全部合并桶，记忆不丢失。
+
+## 可观测（潮浪收益与卫生计数在哪里看）
+
+潮浪并忆与写路径卫生的计数不打到浏览器，落在 **dsh 宿主进程日志**：
+
+- **日志通道**：插件 `info`/`warn` 双通道——`ctx.logger`（dsh 内部日志，默认不透出
+  stdout）+ `console.log/warn` 直出**宿主进程 stdout**。systemd 部署看
+  `journalctl -u dsh.service -f`，非 systemd 看 dsh 进程的 stdout 输出。
+- **每次合并冲刷**（info 级）打一条，含累计 totals：
+
+```
+[dsh-mem0] mem0 coalesced 3 turn(s) into 1 write (session=<id>, saved 2 call(s), chars=512, trigger=idle; totals: batches=12 savedCalls=34 dropped=0 jsonSanitized=3)
+```
+
+- **计数含义**：
+
+| 字段 | 含义 |
+|------|------|
+| `savedCalls` | 累计省下的服务端 LLM 抽取调用数（合并 N 轮 = 省 N−1 次） |
+| `dropped` | 队列满（默认 50）丢最旧待写条的次数，同时打一条 warn |
+| `jsonSanitized` | 被剥除的纯 JSON 消息条数（防键名/工具输出当「事实」入库） |
+| `batches` / `direct` | 批量合并写入次数 / 快速直写次数（超长或合并关闭时） |
+
+队列丢最旧（warn）：`[dsh-mem0] mem0 sync queue full (50), dropped oldest pending turn`；
+JSON 剥除与快速直写为 debug 级。熔断开合、直接写在失败时均有 warn。
 
 ## 超时分层（与 hermes 同步）
 

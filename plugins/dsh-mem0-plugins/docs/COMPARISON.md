@@ -10,7 +10,7 @@
 | 能力 | hermes | dsh-mem0-plugins | 状态 |
 |------|--------|------------------|------|
 | 用户消息进轮即后台预取 | `on_turn_start` → 后台线程 | **不做**（平台时序约束：assemble 在消息回显前，等待=卡回显；见「平台时序约束」节） | ⚖️ 架构差异 |
-| 召回热等待 | `_PREFETCH_WAIT_SECS=15`，超时放行不阻塞 | **无**（取消等待注入）；usage 节引导 + **第一步强制提醒**（`forceRecallStep` 默认开，pre-step 注入 plugin-source 提醒，琐碎轮跳过） | ⚖️ 显式化+流程化 |
+| 召回热等待 | `_PREFETCH_WAIT_SECS=15`，超时放行不阻塞 | **无**（取消等待注入）；usage 节引导 + **第一步强制提醒**（`forceRecallStep` 默认开，pre-step 注入 plugin-source `form:'notice'` 提醒，UI 折叠行直接可见摘要，琐碎轮跳过） | ⚖️ 显式化+流程化 |
 | 长文本查询蒸馏 | `_distill_query`：≤500 直通 / 8000 截断 / 本地小模型提炼意图 | `src/distill.js` 全套移植 | ✅ 对齐 |
 | 蒸馏端点/模型 | 生产 env：Qwen3.5-9B @10.220.0.35:8090/v1, key=devops | 同款默认值，设置卡可改 | ✅ 对齐 |
 | 蒸馏单次超时 | 生产 env `HERMES_DISTILL_TIMEOUT_S=90`（代码默认 30s） | 默认 **90000ms**（对齐生产值） | ✅ 已补齐 |
@@ -98,7 +98,12 @@ dsh-agent-loop 的 step 时序（0.1.1-rc.2 源码实证）：
 推论：任何在 assemble/pre-step 瀑布里等网络的插件都会**延迟用户消息回显**（实测 15s 等待 = 每条消息卡 15s 才显示）。append 之后、请求组装之前**不存在**内容注入钩子（agent/request 只能换 config；llm/stream 的 options 深冻结只可 gate 不可改）。因此「回显零延迟」与「首次 LLM 调用前注入召回」在当前 dsh 版本**互斥**——本插件的最终形态（v2 重构，2026-08-23）：
 
 - **放弃后台预取注入**（曾以 recallWaitMs 做过可调等待，后删除该字段）；
-- 召回走**显式工具链路**：usage 节 MUST 引导 + **方案 B 每轮第一步强制提醒**（`forceRecallStep`，agent/pre-step 注入 plugin-source 提醒，琐碎轮跳过）→ 模型先调 mem0_search → 工具卡在 UI 可见（等价 hermes 的召回状态行）。
+- 召回走**显式工具链路**：usage 节 MUST 引导 + **方案 B 每轮第一步强制提醒**（`forceRecallStep`，agent/pre-step 注入 plugin-source `form:'notice'` 提醒，UI 消息区「上下文注入 · 记忆提醒」折叠行直接可见，琐碎轮跳过）→ 模型先调 mem0_search → 工具卡在 UI 可见（等价 hermes 的召回状态行）。
+
+**UI 呈现实测补充（0.1.1-rc.2 客户端源码实证）**：plugin-source 的 `user/message`
+被会话端分类为 `kind:"context"`（上下文注入行）。不带 `form` 时走 opaque 呈现：
+折叠行**无摘要**、正文要点开才见。带 `form:'notice'` + `source.summary` 时折叠行
+直接渲染摘要——「提醒」必须用 notice 形态注入才可见，否则用户感知为「没提醒」。
 
 ## 七、已知待办（记录不阻塞）
 

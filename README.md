@@ -387,8 +387,8 @@ bundle 插件 [`plugins/dsh-mem0-plugins/`](plugins/dsh-mem0-plugins/README.md)�
 
 | 能力 | 说明 |
 |------|------|
-| 工具驱动召回 | 每轮第一步注入「必须先调 mem0_search」提醒（琐碎轮跳过），模型先搜索再作答——工具卡在 UI 可见召回动作；长查询先经本地小模型蒸馏成检索意图（防打爆服务端），超时/双飞/漂移防护/失败回退原文全套 |
-| 自动写入 | 每轮对话交给服务端 LLM 抽取事实；潮浪并忆把同会话短对话合并成批量写入摊薄调用（收益日志可见），纯 JSON 工具输出剥除防污染，中断轮次不入记忆 |
+| 工具驱动召回 | 每轮第一步注入「记忆提醒」注记（『必须先调 mem0_search』，UI 消息区「上下文注入」行直接可见、琐碎轮跳过），模型先搜索再作答——工具卡在 UI 可见召回动作；长查询先经本地小模型蒸馏成检索意图（防打爆服务端），超时/双飞/漂移防护/失败回退原文全套 |
+| 自动写入 | 每轮对话交给服务端 LLM 抽取事实；潮浪并忆把同会话短对话合并成批量写入摊薄调用（每次合并冲刷在 dsh 宿主日志打一条 totals，见下方「可观测」）；纯 JSON 工具输出剥除防污染，中断轮次不入记忆 |
 | 四个工具 | `mem0_search` / `mem0_add` / `mem0_update` / `mem0_delete`；改错与遗忘自动上报 `/evolve/feedback` 参与 salience 进化 |
 | 可靠性 | 300s HTTP 总闸、熔断器（5 连败 120s 冷却）、有界队列丢最旧、连接级重试、失败一律回退原文 |
 
@@ -402,6 +402,18 @@ dsh plugin --profile web add /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
 装好后在 dsh「设置 → 插件配置 → Mem0 记忆」填写 server 地址与 API Key 即可（enabled 默认开启）；
 蒸馏/强制提醒/合并/熔断等全部参数可在设置页热调（即时生效，无需重启）。完整配置项与
 排障见插件 [README](plugins/dsh-mem0-plugins/README.md)。
+
+**可观测（潮浪收益在哪里看）**：收益计数不打在浏览器，落在 **dsh 宿主进程日志**
+（systemd：`journalctl -u dsh.service -f`；非 systemd：dsh 进程 stdout）。每次潮浪
+合并冲刷打一条 info，含累计 totals：
+
+```
+[dsh-mem0] mem0 coalesced 3 turn(s) into 1 write (session=<id>, saved 2 call(s), chars=512, trigger=idle; totals: batches=12 savedCalls=34 dropped=0 jsonSanitized=3)
+```
+
+`savedCalls` = 累计省下的服务端抽取调用次数；`dropped` = 队列满丢最旧次数（另有 warn）；
+`jsonSanitized` = 剥除的纯 JSON 消息条数。全部计数语义与示例见插件
+[README](plugins/dsh-mem0-plugins/README.md)。
 
 
 ### config.json（模型与图存储）
