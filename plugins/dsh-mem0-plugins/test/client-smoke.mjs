@@ -20,9 +20,25 @@ const ok = (label) => { PASS.push(label); console.log('  ✓ ' + label) }
 function makeElement(type, props, ...children) {
   return { type, props: props || {}, children: children.flat().filter((c) => c !== null && c !== undefined) }
 }
+// 递归执行组件树（模拟 React 渲染）：子组件内部的 prop 缺陷在这里必须炸出来
+let renderDepth = 0
+function renderTree(node) {
+  if (node === null || node === undefined || typeof node === 'string' || typeof node === 'number') return
+  if (typeof node.type === 'function') {
+    renderDepth += 1
+    if (renderDepth > 50) throw new Error('component tree too deep — likely infinite recursion')
+    const children = node.type(node.props)
+    renderTree(children)
+    renderDepth -= 1
+    return
+  }
+  for (const child of node.children || []) renderTree(child)
+}
 let elementCount = 0
 const reactStub = {
-  useState: (init) => [typeof init === 'function' ? init() : init, () => {}],
+  // 默认展开卡片（Mem0Card 的折叠 useState(false) 会被强制 true），
+  // 让 body 内全部字段组件进入渲染路径——折叠态会掩盖子组件缺陷
+  useState: (init) => [typeof init === 'boolean' ? true : (typeof init === 'function' ? init() : init), () => {}],
   useSyncExternalStore: (subscribe, getSnapshot) => {
     subscribe(() => {})
     return getSnapshot()
@@ -148,6 +164,7 @@ const el = component({
   ...injected
 })
 assert.ok(el); ok('卡片组件可渲染出元素')
+renderTree(el); ok('组件树递归渲染无异常（FieldRow t 透传等子组件缺陷会在此炸出）')
 // 展开 state 默认 false → 只渲染折叠头；用内部展开无法直接驱动（useState stub），
 // 但投影快照字段完整性可以验证：
 const snap = injected.hooks.mem0.getSnapshot()

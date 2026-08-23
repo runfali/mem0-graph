@@ -423,6 +423,7 @@ window.__ModuleLoader__.load({
               const field = fields[key];
               const isBool = spec.type === "bool";
               return jsx(FieldRow, {
+                t,
                 id: "plugin-config-dsh-mem0-" + key,
                 kind: spec.type,
                 labelKey: FIELD_LABELS[key],
