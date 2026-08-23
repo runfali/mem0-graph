@@ -205,7 +205,9 @@ export function apply(ctx, config = {}) {
         const s = spec()
         if (!s.enabled || !s.host) return decision
         if (s.forceRecallStep !== true) return decision
-        if (payload.step !== 0) return decision // 每轮只在第一步提醒
+        // 运行时第一步的 step=1（dsh-agent-loop：phase.step 初始 0，preStep 传 step+1）；
+        // 每轮只在第一步注入，工具调用后的后续步（step>=2）不重复打扰
+        if (payload.step !== 1) return decision
         const firstText = textOfBlocks(payload.messages && payload.messages[0] && payload.messages[0].content)
         if (isTrivialPrompt(firstText)) return decision // 琐碎轮（问候/确认）不打扰
         const reminder = {
