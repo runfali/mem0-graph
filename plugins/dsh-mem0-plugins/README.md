@@ -155,8 +155,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 
 ```bash
 cd /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
-node test/smoke.mjs         # Host 半：apply 全链路 + 工具执行 + 召回/写入链路 + 蒸馏 + 卫生（63 项）
-node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单 save 真链（22 项）
+node test/smoke.mjs         # Host 半：apply 全链路 + 工具（含蒸馏）+ 写入链路 + 强制提醒 + 卫生（76 项）
+node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单 save 真链（28 项）
 ```
 
 真机联测记录（2026-08-23，本机 mem0-dev 栈）：
@@ -174,4 +174,4 @@ no-auth rejected as expected: Mem0HttpError | HTTP 401
 | 「circuit breaker open」 | 服务端连挂多次触发熔断；检查 server 后等冷却或调低阈值 |
 | HTTP 401 | `apiKey` 缺失或错误（非 AUTH_DISABLED 部署必须填 ADMIN_API_KEY） |
 | 「server unreachable」 | `curl http://<host>/openapi.json` 先确认可达性 |
-| 记忆没被召回 | 该 user_id 下无相关记忆（`GET /memories` 查看）；或 recallWaitMs 太短 |
+| 记忆没被召回 | 该 user_id 下无相关记忆（`GET /memories` 查看）；模型未调 mem0_search（检查 `forceRecallStep` 提醒是否被 UI 注记与工具卡跳过） |
