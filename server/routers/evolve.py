@@ -1,19 +1,20 @@
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
-from auth import verify_auth
+from auth import require_auth
 from db import get_db
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from models import (
     EvolveFeedback,
     EvolveQuery,
     EvolveSalience,
     EvolveSalienceAdjustment,
     RequestLog,
+    User,
 )
 from pydantic import BaseModel
 from server_state import get_current_config
-from sqlalchemy import String, and_, case, column, func, or_, select, table
+from sqlalchemy import String, and_, case, column, func, or_, select, table, text
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/evolve", tags=["evolve"])
@@ -25,6 +26,34 @@ def _collection_name() -> str:
         config.get("vector_store", {}).get("config", {}).get("collection_name")
         or "mem0_memories"
     )
+
+
+def _memory_owner(db: Session, memory_id: str) -> Optional[str]:
+    """Return the payload user_id of a memory, or None if it does not exist.
+
+    mem0_memories.id is uuid while the path parameter is a string; CAST keeps
+    the comparison portable across Postgres and the sqlite test doubles.
+    """
+    row = db.execute(
+        text(f"SELECT payload->>'user_id' FROM {_collection_name()} WHERE CAST(id AS VARCHAR) = :mid LIMIT 1"),
+        {"mid": memory_id},
+    ).first()
+    return row[0] if row else None
+
+
+def _authorize_memory_write(request: Request, user: User, memory_id: str, db: Session) -> None:
+    """Scope salience writes to memories owned by the caller.
+
+    Admins, the ADMIN_API_KEY and AUTH_DISABLED callers keep global access;
+    everyone else may only touch their own memories. A missing or foreign
+    memory yields 404 so existence is not leaked.
+    """
+    auth_type = getattr(request.state, "auth_type", "none")
+    if auth_type in {"admin_api_key", "disabled"} or user.role == "admin":
+        return
+    owner = _memory_owner(db, memory_id)
+    if owner is None or owner != str(user.id):
+        raise HTTPException(status_code=404, detail="Memory not found.")
 
 
 def _memory_still_exists() -> "ColumnElement[bool]":
@@ -64,7 +93,8 @@ class RetainResponse(BaseModel):
 @router.post("/feedback", response_model=FeedbackResponse)
 def submit_feedback(
     body: FeedbackRequest,
-    _auth=Depends(verify_auth),
+    request: Request,
+    user: User = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     """Record feedback for a memory and adjust its salience score.
@@ -72,6 +102,7 @@ def submit_feedback(
     Adjusts only the salience score; memory content is never touched, so a
     misreport is reversible.
     """
+    _authorize_memory_write(request, user, body.memory_id, db)
     now = datetime.now(timezone.utc)
     feedback = EvolveFeedback(
         memory_id=body.memory_id,
@@ -110,7 +141,8 @@ def submit_feedback(
 @router.post("/memory/{memory_id}/retain", response_model=RetainResponse)
 def retain_memory(
     memory_id: str,
-    _auth=Depends(verify_auth),
+    request: Request,
+    user: User = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     """Manually keep a memory and mark it as reviewed.
@@ -118,6 +150,7 @@ def retain_memory(
     Bumps last_access_at so the stale (>14 days unrecalled) list drops it.
     Memory content and salience score are untouched.
     """
+    _authorize_memory_write(request, user, memory_id, db)
     now = datetime.now(timezone.utc)
     salience = db.get(EvolveSalience, memory_id)
     if salience is None:
@@ -133,7 +166,7 @@ def retain_memory(
 
 @router.get("/report")
 def evolve_report(
-    _auth=Depends(verify_auth),
+    _auth=Depends(require_auth),
     db: Session = Depends(get_db),
     days: int = Query(default=30, ge=1, le=90),
 ):

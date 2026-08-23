@@ -1,6 +1,7 @@
 """Tests for the evolve feedback router."""
 
 import os
+import uuid
 import sys
 
 import pytest
@@ -23,9 +24,9 @@ _SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
 if _SERVER_DIR not in sys.path:
     sys.path.insert(0, _SERVER_DIR)
 
-from auth import verify_auth  # noqa: E402
+from auth import require_auth  # noqa: E402
 from db import Base, get_db  # noqa: E402
-from models import EvolveFeedback, EvolveSalience, EvolveSalienceAdjustment  # noqa: E402
+from models import EvolveFeedback, EvolveSalience, EvolveSalienceAdjustment, User  # noqa: E402
 from routers import evolve as evolve_router  # noqa: E402
 
 
@@ -41,7 +42,16 @@ def client():
 
     app = FastAPI()
     app.include_router(evolve_router.router)
-    app.dependency_overrides[verify_auth] = lambda: None
+    def _fake_admin():
+        return User(
+            id=uuid.UUID(int=1),
+            name="test-admin",
+            email="admin@test.local",
+            password_hash="",
+            role="admin",
+        )
+
+    app.dependency_overrides[require_auth] = _fake_admin
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -119,3 +129,88 @@ def test_correction_writes_audit_and_feedback_rows(client):
 def test_invalid_feedback_type_rejected(client):
     resp = _post(client, memory_id="m6", feedback_type="nope")
     assert resp.status_code == 422
+
+
+def _make_scoped_client(role: str):
+    """Client wired for ownership tests: a caller plus a mem0_memories table
+    so the write guard can resolve payload user_ids.
+
+    Per project convention, memories created via the server carry the
+    server-side User UUID as their payload user_id.
+    """
+    from sqlalchemy import text
+
+    caller_uuid = uuid.UUID(int=2)
+    foreign_uuid = uuid.UUID(int=3)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE mem0_memories (id VARCHAR(36) PRIMARY KEY, payload TEXT)"))
+        conn.execute(
+            text("INSERT INTO mem0_memories (id, payload) VALUES ('m-foreign', :p)"),
+            {"p": '{"user_id": "%s"}' % foreign_uuid},
+        )
+        conn.execute(
+            text("INSERT INTO mem0_memories (id, payload) VALUES ('m-mine', :p)"),
+            {"p": '{"user_id": "%s"}' % caller_uuid},
+        )
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    app = FastAPI()
+    app.include_router(evolve_router.router)
+
+    def _fake_user():
+        return User(
+            id=caller_uuid,
+            name="test-user",
+            email="user@test.local",
+            password_hash="",
+            role=role,
+        )
+
+    app.dependency_overrides[require_auth] = _fake_user
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app), TestingSessionLocal
+
+
+def test_feedback_rejects_memory_owned_by_another_user():
+    """IDOR regression: a non-admin caller must not touch foreign memories."""
+    client = _make_scoped_client(role="user")
+    resp = _post(client, memory_id="m-foreign", feedback_type="useful")
+    assert resp.status_code == 404
+
+    resp = client[0].post("/evolve/memory/m-foreign/retain")
+    assert resp.status_code == 404
+
+    with client[1]() as db:
+        assert db.get(EvolveSalience, "m-foreign") is None
+
+
+def test_feedback_allows_own_memory_for_non_admin():
+    client = _make_scoped_client(role="user")
+    resp = _post(client, memory_id="m-mine", feedback_type="useful")
+    assert resp.status_code == 200
+    assert resp.json()["memory_id"] == "m-mine"
+
+    resp = client[0].post("/evolve/memory/m-mine/retain")
+    assert resp.status_code == 200
+
+
+def test_feedback_allows_missing_payload_for_admin():
+    """Admins keep global access even without an owner row."""
+    client = _make_scoped_client(role="admin")
+    resp = _post(client, memory_id="not-in-table", feedback_type="useful")
+    assert resp.status_code == 200

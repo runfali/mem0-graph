@@ -1,6 +1,7 @@
 """Tests for the evolve report endpoint (GET /evolve/report)."""
 
 import os
+import uuid
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -22,7 +23,7 @@ _SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
 if _SERVER_DIR not in sys.path:
     sys.path.insert(0, _SERVER_DIR)
 
-from auth import verify_auth  # noqa: E402
+from auth import require_auth  # noqa: E402
 from db import Base, get_db  # noqa: E402
 from models import (  # noqa: E402
     EvolveFeedback,
@@ -30,6 +31,7 @@ from models import (  # noqa: E402
     EvolveSalience,
     EvolveSalienceAdjustment,
     RequestLog,
+    User,
 )
 from routers import evolve as evolve_router  # noqa: E402
 from sqlalchemy import text  # noqa: E402
@@ -50,7 +52,16 @@ def client():
 
     app = FastAPI()
     app.include_router(evolve_router.router)
-    app.dependency_overrides[verify_auth] = lambda: None
+    def _fake_admin():
+        return User(
+            id=uuid.UUID(int=1),
+            name="test-admin",
+            email="admin@test.local",
+            password_hash="",
+            role="admin",
+        )
+
+    app.dependency_overrides[require_auth] = _fake_admin
 
     def override_get_db():
         db = TestingSessionLocal()

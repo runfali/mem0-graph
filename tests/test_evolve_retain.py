@@ -4,6 +4,7 @@
 """
 
 import os
+import uuid
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -25,10 +26,10 @@ _SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
 if _SERVER_DIR not in sys.path:
     sys.path.insert(0, _SERVER_DIR)
 
-from auth import verify_auth  # noqa: E402
+from auth import require_auth  # noqa: E402
 from db import Base, get_db  # noqa: E402
 from evolve_cleanup import register_delete_cleanup  # noqa: E402
-from models import EvolveFeedback, EvolveSalience, EvolveSalienceAdjustment  # noqa: E402
+from models import EvolveFeedback, EvolveSalience, EvolveSalienceAdjustment, User  # noqa: E402
 
 # main.py builds a real Memory (pgvector → postgres) at import time via
 # initialize_state; stub it out BEFORE importing main so collection succeeds
@@ -71,7 +72,16 @@ def client():
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
     app = server_main.app
-    app.dependency_overrides[verify_auth] = lambda: None
+    def _fake_admin():
+        return User(
+            id=uuid.UUID(int=1),
+            name="test-admin",
+            email="admin@test.local",
+            password_hash="",
+            role="admin",
+        )
+
+    app.dependency_overrides[require_auth] = _fake_admin
     # _persist_evolve_* write via main's module-level SessionLocal (postgres in
     # prod); point it at the test DB so rows land in sqlite.
     server_main.SessionLocal = TestingSessionLocal

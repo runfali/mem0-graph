@@ -2,6 +2,7 @@
 into evolve_queries.trace while keeping the client response trace-free."""
 
 import os
+import uuid
 import sys
 import time
 
@@ -21,9 +22,9 @@ _SERVER_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "server")
 if _SERVER_DIR not in sys.path:
     sys.path.insert(0, _SERVER_DIR)
 
-from auth import verify_auth  # noqa: E402
+from auth import require_auth  # noqa: E402
 from db import Base  # noqa: E402
-from models import EvolveQuery  # noqa: E402
+from models import EvolveQuery, User  # noqa: E402
 
 import server_state  # noqa: E402
 
@@ -75,7 +76,16 @@ def client():
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
     app = server_main.app
-    app.dependency_overrides[verify_auth] = lambda: None
+    def _fake_admin():
+        return User(
+            id=uuid.UUID(int=1),
+            name="test-admin",
+            email="admin@test.local",
+            password_hash="",
+            role="admin",
+        )
+
+    app.dependency_overrides[require_auth] = _fake_admin
     server_main.SessionLocal = TestingSessionLocal
     server_main.get_memory_instance = lambda: _FakeMemory()
 
