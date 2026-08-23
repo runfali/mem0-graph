@@ -70,7 +70,11 @@ export const Config = z.object({
 
 const METADATA_CHANNEL = 'dsh'
 
-/** 第一步强制搜索提醒（方案 B）：注入为 plugin-source 用户消息，随本轮进入模型上下文。 */
+/** 第一步强制搜索提醒（方案 B）：注入为 plugin-source 用户消息，随本轮进入模型上下文。
+ * 消息带 form:'notice'：客户端把它渲染为「上下文注入·记忆提醒」行，折叠状态下摘要
+ * （source.summary）即直接可见——用户一眼能看到『必须先调 mem0_search』，展开可见全文。
+ * （2026-08-23 实测：无 form 的 plugin 消息走 opaque 呈现，UI 折叠行无摘要、文本
+ * 要点开才见，用户感知为「没有提醒」；notice 形态是该 UI 专为可读提醒设计的呈现。） */
 const RECALL_REMINDER = (
   '[mem0 requirement] This step MUST call mem0_search before producing any final answer. ' +
   'Run one or several searches with different wording as needed, then answer using the ' +
@@ -223,8 +227,14 @@ export function apply(ctx, config = {}) {
         const reminder = {
           role: 'user',
           content: [{ type: 'text', text: RECALL_REMINDER }],
-          source: { kind: 'plugin', plugin: 'dsh-mem0-plugins' }
+          source: {
+            kind: 'plugin',
+            plugin: 'dsh-mem0-plugins',
+            form: 'notice',
+            summary: '【记忆提醒】回答前必须先调 mem0_search（先搜再答）'
+          }
         }
+        log.debug('recall reminder injected (session=' + sessionId + ')')
         return { kind: 'enter', messages: [...decision.messages, reminder] }
       } catch (error) {
         log.debug('recall reminder injection failed: ' + String((error && error.message) || error))

@@ -287,7 +287,7 @@ window.__ModuleLoader__.load({
       "field.agentId": "智能体标识（agent_id）",
       "hint.agentId": "写入时附带的 agent_id，便于按来源过滤",
       "field.forceRecallStep": "第一步强制搜索提醒",
-      "hint.forceRecallStep": "每轮第一步注入『必须先调 mem0_search』提醒（琐碎轮跳过）；配合 usage 引导让『先搜再答』成为每轮流程，默认开启",
+      "hint.forceRecallStep": "每轮第一步注入『必须先调 mem0_search』提醒（UI 消息区显示为「上下文注入·记忆提醒」注记，折叠行直接可见，琐碎轮跳过）；配合 usage 引导让『先搜再答』成为每轮流程，默认开启",
       "field.topK": "搜索条数上限（top_k）",
       "hint.topK": "每次召回返回的最大条数，1–50，默认 10",
       "field.rerank": "搜索重排（rerank）",
