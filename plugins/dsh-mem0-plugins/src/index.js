@@ -21,6 +21,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
 import { distillQuery } from './distill.js'
+import { isTrivialPrompt } from './guards.js'
 
 /** Cordis 插件短名（路由/日志用）。 */
 export const name = 'mem0'
@@ -48,7 +49,7 @@ export const Config = z.object({
   distillBaseUrl: z.string().default('http://10.220.0.35:8090/v1'),
   distillApiKey: z.string().default('devops'),
   distillModel: z.string().default('Qwen3.5-9B'),
-  distillTimeoutMs: z.number().step(1).min(1000).max(300000).default(30000),
+  distillTimeoutMs: z.number().step(1).min(1000).max(600000).default(90000),
   distillRetryAfterMs: z.number().step(1).min(500).max(120000).default(20000),
   syncEnabled: z.boolean().default(true),
   feedbackEnabled: z.boolean().default(true),
@@ -138,7 +139,7 @@ export function apply(ctx, config = {}) {
       distillBaseUrl: String(value.distillBaseUrl || '').trim(),
       distillApiKey: String(value.distillApiKey || '').trim(),
       distillModel: String(value.distillModel || '').trim() || 'Qwen3.5-9B',
-      distillTimeoutMs: clampInt(value.distillTimeoutMs, 1000, 300000, 30000),
+      distillTimeoutMs: clampInt(value.distillTimeoutMs, 1000, 600000, 90000),
       distillRetryAfterMs: clampInt(value.distillRetryAfterMs, 500, 120000, 20000),
       syncEnabled: value.syncEnabled !== false,
       feedbackEnabled: value.feedbackEnabled !== false,
@@ -214,6 +215,8 @@ export function apply(ctx, config = {}) {
       if (breaker.open) return
       const query = textOfBlocks(payload.message && payload.message.content)
       if (!query || query.length < 2) return
+      // 琐碎输入（问候/确认/斜杠命令）不值得召回——对齐 hermes is_trivial_prompt
+      if (isTrivialPrompt(query)) return
       startPrefetch(payload.agent.id, query)
     } catch (error) {
       log.debug('prefetch setup failed: ' + String((error && error.message) || error))
@@ -236,7 +239,11 @@ export function apply(ctx, config = {}) {
           if (recalled) {
             assembly.sections.push({
               name: 'mem0:recall',
-              text: '# Mem0 Memory\nRelevant memories recalled for the current question:\n' + recalled
+              text:
+                '# Mem0 Memory\n' +
+                '[System note: the following is recalled memory context, NOT new user input. ' +
+                'Treat it as authoritative reference data — your persistent memory of this user.]\n' +
+                'Relevant memories recalled for the current question:\n' + recalled
             })
           }
         }
@@ -298,7 +305,11 @@ export function apply(ctx, config = {}) {
         if (!message || !message.source || message.source.kind !== 'model') return
         const text = textOfBlocks(message.content)
         if (!text) return
-        lastAssistantByTurn.set(session.id + '\u0000' + event.turn, text)
+        // 中断的部分输出不是持久对话真相（hermes #15218）：标记随文本入栈，出队时跳过
+        lastAssistantByTurn.set(session.id + '\u0000' + event.turn, {
+          text,
+          interrupted: event.interrupted === true
+        })
         capMap(lastAssistantByTurn)
       }
     } catch (error) {
@@ -312,10 +323,17 @@ export function apply(ctx, config = {}) {
       const sessionId = payload.agent.id
       const userText = lastUserBySession.get(sessionId) || ''
       const assistantKey = sessionId + '\u0000' + payload.turn
-      const assistantText = lastAssistantByTurn.get(assistantKey) || ''
+      const assistantEntry = lastAssistantByTurn.get(assistantKey)
+      const assistantText = assistantEntry ? assistantEntry.text : ''
+      const interrupted = assistantEntry ? assistantEntry.interrupted === true : false
       lastUserBySession.delete(sessionId)
       lastAssistantByTurn.delete(assistantKey)
       if (!s.enabled || !s.syncEnabled || !s.host) return
+      // 中断的轮次整体不入记忆：部分输出会污染未来召回
+      if (interrupted) {
+        log.debug('turn interrupted, skipping memory sync for session ' + sessionId)
+        return
+      }
       if (!userText && !assistantText) return
       if (breaker.open) return
       coalescer.enqueue({ userId: s.userId, sessionId, userContent: userText, assistantContent: assistantText })

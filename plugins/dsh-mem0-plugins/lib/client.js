@@ -52,6 +52,7 @@ window.__ModuleLoader__.load({
       { key: "coalesceMaxTurns", type: "number" },
       { key: "coalesceMaxChars", type: "number" },
       { key: "fastpathChars", type: "number" },
+      { key: "feedbackEnabled", type: "bool" },
       { key: "queueMaxLen", type: "number" },
       { key: "breakerThreshold", type: "number" },
       { key: "breakerCooldownMs", type: "number" },
@@ -271,7 +272,7 @@ window.__ModuleLoader__.load({
       "field.distillModel": "蒸馏模型",
       "hint.distillModel": "默认 Qwen3.5-9B（本地部署）",
       "field.distillTimeoutMs": "蒸馏单次超时（毫秒）",
-      "hint.distillTimeoutMs": "默认 30000",
+      "hint.distillTimeoutMs": "默认 90000（对齐 hermes 生产 HERMES_DISTILL_TIMEOUT_S=90）",
       "field.distillRetryAfterMs": "双飞触发阈值（毫秒）",
       "hint.distillRetryAfterMs": "首请求无响应超过该时长即并发第二请求，先完成者胜出，默认 20000",
       "field.syncEnabled": "自动写入对话",
@@ -288,6 +289,8 @@ window.__ModuleLoader__.load({
       "hint.coalesceMaxChars": "桶内累计字符达到即冲刷，默认 4000",
       "field.fastpathChars": "快速直写阈值（字符）",
       "hint.fastpathChars": "单轮消息超过该长度直接落库不进缓冲，默认 2000",
+      "field.feedbackEnabled": "进化反馈上报",
+      "hint.feedbackEnabled": "mem0_update/delete 成功后向 /evolve/feedback 上报 correction/useless，参与服务端 salience 进化；失败不影响工具结果",
       "field.queueMaxLen": "待写队列上限",
       "hint.queueMaxLen": "队列满时丢最旧，防止服务端长时间不可用时内存膨胀，默认 50",
       "field.breakerThreshold": "熔断阈值（连续失败次数）",
@@ -316,7 +319,7 @@ window.__ModuleLoader__.load({
     const GROUPS = [
       { titleKey: "group.connection", keys: ["enabled", "host", "apiKey", "userId", "agentId"] },
       { titleKey: "group.recall", keys: ["recallEnabled", "recallWaitMs", "topK", "rerank", "distillEnabled", "distillMinChars", "distillInputMaxChars", "distillBaseUrl", "distillApiKey", "distillModel", "distillTimeoutMs", "distillRetryAfterMs"] },
-      { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars"] },
+      { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars", "feedbackEnabled"] },
       { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] }
     ];
 

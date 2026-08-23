@@ -79,6 +79,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `coalesceMaxTurns` | `5` | 桶内轮数上限 |
 | `coalesceMaxChars` | `4000` | 桶内字符上限 |
 | `fastpathChars` | `2000` | 单轮超过该长度直接落库 |
+| `feedbackEnabled` | `true` | update/delete 成功后上报 evolve 反馈（可关） |
 
 ### 可靠性与超时
 
@@ -98,6 +99,13 @@ dsh plugin --profile web remove dsh-mem0-plugins
     host: http://10.200.0.5:8888
     apiKey: your-admin-api-key
 ```
+
+## 消息卫生
+
+- **琐碎输入跳过**：纯问候/确认/斜杠命令（hi / ok / thanks / /命令…）不触发预取，
+  零网络往返——移植自 hermes `is_trivial_prompt`；
+- **中断轮不入记忆**：被打断的半截回复不会写进 mem0（部分输出不是持久对话真相，
+  对齐 hermes #15218）。
 
 ## 查询蒸馏（防长文本打爆服务端）
 

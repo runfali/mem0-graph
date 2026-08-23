@@ -19,6 +19,7 @@ import { apply, Config, MEM0_SETTINGS_NAMESPACE } from '../src/index.js'
 import { CircuitBreaker, Mem0HttpError, isClientError } from '../src/backend.js'
 import { looksLikeJson, sanitizeJsonMessage } from '../src/coalesce.js'
 import { distillQuery } from '../src/distill.js'
+import { isTrivialPrompt } from '../src/guards.js'
 
 const PASS = []
 function ok(label) {
@@ -139,7 +140,7 @@ function resolveConfigManually(schema, entry) {
     distillBaseUrl: 'http://mock-distill/v1',
     distillApiKey: 'devops',
     distillModel: 'Qwen3.5-9B',
-    distillTimeoutMs: 30000,
+    distillTimeoutMs: 90000,
     distillRetryAfterMs: 20000,
     syncEnabled: true,
     feedbackEnabled: true,
@@ -202,6 +203,18 @@ console.log('== 单元：查询蒸馏 ==')
 }
 
 console.log('== 召回链路含蒸馏（超长消息）==')
+console.log('== 单元：琐碎输入守卫 ==')
+{
+  for (const t of ['hi', 'ok!', 'thanks.', '/compact', '继续', '', '   ']) {
+    // 注意 hermes 词表是英文的；中文「继续」不在词表——如实断言行为
+  }
+  assert.equal(isTrivialPrompt('hi'), true); ok('英文问候判琐碎')
+  assert.equal(isTrivialPrompt('OK!!!'), true); ok('带标点确认判琐碎')
+  assert.equal(isTrivialPrompt('/compact'), true); ok('斜杠命令判琐碎')
+  assert.equal(isTrivialPrompt('帮我看看这个报错'), false); ok('正常中文请求不误伤')
+  assert.equal(isTrivialPrompt('continue'), true); ok('continue 判琐碎')
+}
+
 console.log('== Host apply 全链路 ==')
 const env = makeCtx({})
 apply(env.ctx, { host: 'http://mock:9999' })
@@ -256,6 +269,15 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
     assert.ok(sentQuery.length < longText.length / 10); ok('查询长度被压缩两个数量级')
   }
 
+  // 琐碎输入跳过预取
+  {
+    const callsBefore = fetchCalls.filter((c) => c.path === '/search').length
+    const agent = { id: 'sess-T' }
+    await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: 'thanks!' }] }, turn: 1 })
+    await emit('system-prompt/assemble', { sections: [] }, { agent }, async () => ({ sections: [] }))
+    assert.equal(fetchCalls.filter((c) => c.path === '/search').length, callsBefore); ok('琐碎输入零网络往返')
+  }
+
   // 使用说明节出现
   const usageText = env.sections[0].text()
   assert.match(usageText, /# Mem0 Memory/); ok('使用说明节随启用而生效')
@@ -284,6 +306,20 @@ console.log('== 启用后：写入链路 ==')
   assert.equal(lastBody.messages.length, 2); ok('一轮 user+assistant 成对入桶（插件通知被过滤）')
   assert.match(lastBody.messages[0].content, /8888/)
   assert.equal(lastBody.metadata.channel, 'dsh'); ok('metadata.channel=dsh 盖章')
+}
+
+console.log('== 中断轮不入记忆 ==')
+{
+  const agent = { id: 'sess-I' }
+  await emit('session/event', { id: 'sess-I' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '写一半被打断的问题' }] } })
+  await emit('session/event', { id: 'sess-I' }, { type: 'assistant/message', turn: 1, interrupted: true, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '回答到一半就被用户中止了' }] } })
+  const before = fetchCalls.filter((c) => c.path === '/memories').length
+  await emit('agent/turn-stopping', { agent, turn: 1 })
+  env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })
+  await new Promise((r) => setTimeout(r, 1300))
+  const after = fetchCalls.filter((c) => c.path === '/memories').length
+  const bodies = fetchCalls.filter((c) => c.path === '/memories').map((c) => c.body)
+  assert.ok(!bodies.some((b) => b && b.includes('写一半被打断')), '中断轮内容不得落库'); ok('中断轮整体跳过写入')
 }
 
 console.log('== 工具执行：search 成功形态 ==')
