@@ -40,7 +40,7 @@ export const Config = z.object({
   topK: z.number().step(1).min(1).max(50).default(10),
   rerank: z.boolean().default(false),
   recallEnabled: z.boolean().default(true),
-  recallWaitMs: z.number().step(1).min(0).max(60000).default(8000),
+  recallWaitMs: z.number().step(1).min(0).max(120000).default(15000),
   syncEnabled: z.boolean().default(true),
   feedbackEnabled: z.boolean().default(true),
   coalesceEnabled: z.boolean().default(true),
@@ -52,7 +52,7 @@ export const Config = z.object({
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
-  requestTimeoutMs: z.number().step(1).min(1000).max(600000).default(60000)
+  requestTimeoutMs: z.number().step(1).min(1000).max(900000).default(300000)
 })
 
 const METADATA_CHANNEL = 'dsh'
@@ -122,7 +122,7 @@ export function apply(ctx, config = {}) {
       topK: clampInt(value.topK, 1, 50, 10),
       rerank: value.rerank === true,
       recallEnabled: value.recallEnabled !== false,
-      recallWaitMs: clampInt(value.recallWaitMs, 0, 60000, 8000),
+      recallWaitMs: clampInt(value.recallWaitMs, 0, 120000, 15000),
       syncEnabled: value.syncEnabled !== false,
       feedbackEnabled: value.feedbackEnabled !== false,
       coalesceEnabled: value.coalesceEnabled !== false,
@@ -134,7 +134,7 @@ export function apply(ctx, config = {}) {
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
-      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 600000, 60000)
+      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 900000, 300000)
     }
   }
 
@@ -389,7 +389,6 @@ export function apply(ctx, config = {}) {
       schema: TOOL_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
     },
-    timeoutMs: 90000,
     isConcurrencySafe: () => true,
     async execute(args, exec) {
       const s = spec()
@@ -434,7 +433,6 @@ export function apply(ctx, config = {}) {
       schema: TOOL_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
     },
-    timeoutMs: 240000,
     async execute(args, exec) {
       const s = spec()
       try {
@@ -465,7 +463,6 @@ export function apply(ctx, config = {}) {
       schema: TOOL_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
     },
-    timeoutMs: 120000,
     async execute(args, exec) {
       const s = spec()
       try {
@@ -495,7 +492,6 @@ export function apply(ctx, config = {}) {
       schema: TOOL_OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
     },
-    timeoutMs: 120000,
     async execute(args, exec) {
       const s = spec()
       try {

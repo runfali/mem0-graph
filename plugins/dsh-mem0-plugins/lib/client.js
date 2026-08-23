@@ -249,7 +249,7 @@ window.__ModuleLoader__.load({
       "field.recallEnabled": "自动召回注入",
       "hint.recallEnabled": "每轮用户发言后台预取语义搜索，命中则注入系统提示",
       "field.recallWaitMs": "召回等待时间（毫秒）",
-      "hint.recallWaitMs": "提示词装配时等待预取结果的上限，默认 8000；超时跳过本次注入",
+      "hint.recallWaitMs": "提示词装配时等待预取结果的上限，默认 15000（对齐 hermes _PREFETCH_WAIT_SECS=15）；超时跳过本次注入",
       "field.syncEnabled": "自动写入对话",
       "hint.syncEnabled": "每轮结束后把「用户消息+助手回复」交给服务端抽取事实",
       "field.coalesceEnabled": "潮浪并忆（合并写入）",
@@ -269,7 +269,9 @@ window.__ModuleLoader__.load({
       "field.breakerThreshold": "熔断阈值（连续失败次数）",
       "hint.breakerThreshold": "连续失败达该次数暂停调用，默认 5",
       "field.breakerCooldownMs": "熔断冷却（毫秒）",
-      "hint.breakerCooldownMs": "熔断后经过该时长自动恢复，默认 120000"
+      "hint.breakerCooldownMs": "熔断后经过该时长自动恢复，默认 120000",
+      "field.requestTimeoutMs": "单次请求总超时（毫秒）",
+      "hint.requestTimeoutMs": "插件到 mem0 server 的单请求总闸（search/add 共用），与 hermes 一致默认 300000"
     };
     const en = Object.assign({}, zh, {
       "card.title": "Mem0 memory (dsh-mem0-plugins)",
@@ -291,7 +293,7 @@ window.__ModuleLoader__.load({
       { titleKey: "group.connection", keys: ["enabled", "host", "apiKey", "userId", "agentId"] },
       { titleKey: "group.recall", keys: ["recallEnabled", "recallWaitMs", "topK", "rerank"] },
       { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars"] },
-      { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs"] }
+      { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] }
     ];
 
     // ---- 视图组件 ----

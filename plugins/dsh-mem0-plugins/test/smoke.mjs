@@ -126,7 +126,7 @@ function resolveConfigManually(schema, entry) {
     topK: 10,
     rerank: false,
     recallEnabled: true,
-    recallWaitMs: 8000,
+    recallWaitMs: 15000,
     syncEnabled: true,
     feedbackEnabled: true,
     coalesceEnabled: true,
@@ -138,7 +138,7 @@ function resolveConfigManually(schema, entry) {
     queueMaxLen: 50,
     breakerThreshold: 5,
     breakerCooldownMs: 120000,
-    requestTimeoutMs: 60000
+    requestTimeoutMs: 300000
   }
   return { ...defaults, ...(entry || {}) }
 }

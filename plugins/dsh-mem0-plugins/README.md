@@ -56,7 +56,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | 字段 | 默认 | 说明 |
 |------|------|------|
 | `recallEnabled` | `true` | claimed 预取 + 提示词注入总开关 |
-| `recallWaitMs` | `8000` | 装配点等待预取结果的上限，超时跳过本次注入 |
+| `recallWaitMs` | `15000` | 装配点等待预取结果的上限（对齐 hermes `_PREFETCH_WAIT_SECS=15`），超时跳过本次注入 |
 | `topK` | `10` | 每次召回最大条数（1–50） |
 | `rerank` | `false` | 开启则以全深度模式请求重排（服务端需配置 reranker） |
 
@@ -79,7 +79,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `queueMaxLen` | `50` | 待写队列上限，满时丢最旧 |
 | `breakerThreshold` | `5` | 连续失败达该次数熔断 |
 | `breakerCooldownMs` | `120000` | 熔断冷却时长 |
-| `requestTimeoutMs` | `60000` | 单次 HTTP 请求超时 |
+| `requestTimeoutMs` | `300000` | 单请求总闸，search/add 共用（对齐 hermes `httpx timeout=300.0`） |
 
 要改 profile 层默认值，在 `~/.dsh/profiles/web/cordis.patch.yml` 追加：
 
@@ -99,6 +99,14 @@ dsh plugin --profile web remove dsh-mem0-plugins
   不会造成重复写入）。
 - **有界队列**：待写队列满（默认 50）丢最旧，防止服务端长时间不可用时内存膨胀。
 - **兜底冲刷**：插件 dispose 时冲刷全部合并桶，记忆不丢失。
+
+## 超时分层（与 hermes 同步）
+
+| 层级 | 默认值 | 说明 |
+|------|--------|------|
+| HTTP 总闸 `requestTimeoutMs` | 300s | 插件→server 单请求上限；server 内 LLM 三层兜底最坏 180s，正常召回摸不到总闸 |
+| 召回热等待 `recallWaitMs` | 15s | 主回复前最多等预取这么久，超时不阻塞对话，记忆后台异步补上 |
+| 工具级额外限時 | 无 | 有意不设——只有总闸一层，与 hermes 行为一致 |
 
 ## 本地验证
 
