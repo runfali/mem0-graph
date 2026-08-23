@@ -677,7 +677,7 @@ curl -s http://<llm-host>/v1/chat/completions \
 
 ## 遥测
 
-默认开启（与 mem0 OSS 一致），发送至匿名 PostHog。设 `MEM0_TELEMETRY=false` 可关闭。
+默认关闭（自托管隐私优先）。发送内容仅含邮箱**域名**、版本号与随机安装 ID；如愿意支持改进，设 `MEM0_TELEMETRY=true` 开启。
 
 ---
 

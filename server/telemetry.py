@@ -4,10 +4,10 @@
 - `onboarding_completed` — fires when the setup wizard reaches its final success state
   (so dashboard installs emit both; API-only installs emit only the first).
 
-Enabled by default (matching the mem0 OSS library). Opt out with `MEM0_TELEMETRY=false`.
-Fires to the same PostHog project the library uses. Shared properties: email domain,
-server version, and a randomly generated install UUID. `onboarding_completed` also
-carries the operator's freeform use-case string.
+Opt-in: disabled by default for self-hosted privacy; enable with `MEM0_TELEMETRY=true`.
+When enabled, fires to the same PostHog project the library uses. Shared properties:
+email domain, server version, and a randomly generated install UUID.
+`onboarding_completed` also carries the operator's freeform use-case string.
 """
 
 import json
@@ -24,7 +24,7 @@ import mem0
 PROJECT_API_KEY = "phc_hgJkUVJFYtmaJqrvf6CYN67TIQ8yhXAkWzUn9AMU4yX"
 HOST = "https://us.i.posthog.com"
 
-ENABLED = os.environ.get("MEM0_TELEMETRY", "true").lower() not in {"0", "false", "no", "off"}
+ENABLED = os.environ.get("MEM0_TELEMETRY", "false").lower() in {"1", "true", "yes", "on"}
 STATE_PATH = Path(os.environ.get("MEM0_TELEMETRY_STATE_PATH", "/app/history/telemetry.json"))
 
 _lock = Lock()
