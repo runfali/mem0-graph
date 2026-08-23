@@ -213,6 +213,21 @@ console.log('== 单元：琐碎输入守卫 ==')
   assert.equal(isTrivialPrompt('/compact'), true); ok('斜杠命令判琐碎')
   assert.equal(isTrivialPrompt('帮我看看这个报错'), false); ok('正常中文请求不误伤')
   assert.equal(isTrivialPrompt('continue'), true); ok('continue 判琐碎')
+  // 中文扩充词表
+  assert.equal(isTrivialPrompt('好的'), true); ok('中文应答判琐碎：好的')
+  assert.equal(isTrivialPrompt('嗯嗯'), true); ok('中文应答判琐碎：嗯嗯')
+  assert.equal(isTrivialPrompt('收到！'), true); ok('中文应答带标点：收到！')
+  assert.equal(isTrivialPrompt('明白了。'), true); ok('中文应答带标点：明白了。')
+  assert.equal(isTrivialPrompt('继续'), true); ok('中文推进判琐碎：继续')
+  assert.equal(isTrivialPrompt('下一步'), true); ok('中文推进判琐碎：下一步')
+  assert.equal(isTrivialPrompt('你好'), true); ok('中文问候判琐碎：你好')
+  assert.equal(isTrivialPrompt('在吗？'), true); ok('中文问候带标点：在吗？')
+  assert.equal(isTrivialPrompt('不用了'), true); ok('中文否定应答：不用了')
+  assert.equal(isTrivialPrompt('辛苦了~'), true); ok('中文确认收货：辛苦了~')
+  // 中文不误伤
+  assert.equal(isTrivialPrompt('继续帮我优化这个插件'), false); ok('带实际内容不误伤：继续…')
+  assert.equal(isTrivialPrompt('好的方案是什么？'), false); ok('疑问句不误伤：好的方案…')
+  assert.equal(isTrivialPrompt('你好，我想聊聊记忆插件的架构'), false); ok('问候后带正文不误伤')
 }
 
 console.log('== Host apply 全链路 ==')
