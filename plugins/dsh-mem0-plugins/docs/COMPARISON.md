@@ -87,6 +87,19 @@ emit 实现不含）。依赖声明会被静默吞掉（监听器 TypeError 被 
 上注册子监听。教训：**插件开发一律以运行时 emit 实现为准，d.ts 仅作参考**；
 离线测试的 mock 载荷必须按实测形状构造，否则测试全绿真机全哑。
 
+## 七、平台时序约束（决定召回注入形态的硬边界）
+
+dsh-agent-loop 的 step 时序（0.1.1-rc.2 源码实证）：
+
+1. `claim()` → **assemble()**（含 system-prompt/assemble 瀑布）
+2. append `user/message`（**消息回显发生在 assemble 之后**）
+3. `renderPrompt` → `buildRequest` → **llm/stream**（request 对象 deepFreeze）
+
+推论：任何在 assemble/pre-step 瀑布里等网络的插件都会**延迟用户消息回显**（实测 15s 等待 = 每条消息卡 15s 才显示）。append 之后、请求组装之前**不存在**内容注入钩子（agent/request 只能换 config；llm/stream 的 options 深冻结只可 gate 不可改）。因此「回显零延迟」与「首次 LLM 调用前注入召回」在当前 dsh 版本**互斥**——本插件选择回显优先（默认 recallWaitMs=0），召回改由：
+- 后台预取在装配前完成时直接注入（快 server 场景）；
+- 未完成时由 usage 节引导模型先调 `mem0_search`——工具卡在 UI 可见，等价于 hermes 的召回状态行。
+如需「等召回再回复」的旧语义，把 recallWaitMs 调成 >0（有界等待，代价是回显延迟）。
+
 ## 七、已知待办（记录不阻塞）
 
 - [ ] `describe_recall` 式「已召回 N 条」用户可见状态提示——等 DSH 前端 status 通道；
