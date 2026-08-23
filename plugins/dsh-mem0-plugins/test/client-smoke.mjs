@@ -73,7 +73,7 @@ const ctx = {
   fiber: { state: 0 },
   effect(fn, label) { effects.push({ label, disposer: fn() }) },
   locale: { register: (ns, dict) => registeredLocales.set(ns, dict) },
-  settingsScope: { bind: ({ namespace }) => makeScope(namespace) },
+  settingsScope: { bind: ({ namespace }) => { assert.equal(namespace, 'mem0'); lastScope = makeScope(namespace); return lastScope } },
   slots: {
     inject(slotName, gen) {
       const iterator = gen()
@@ -93,24 +93,34 @@ function makeScope(namespace) {
     user: { apiKey: 'sk-test' }
   }
   const listeners = new Set()
+  const writes = []
   return {
     getSnapshot: () => snapshotValue,
     subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn) },
-    set: async () => true,
-    unset: async () => true
+    set: async (k, v) => {
+      writes.push([k, v])
+      // 模拟宿主 settingsScope.set 的副作用：镜像快照 user 层出现新值
+      snapshotValue.user = { ...(snapshotValue.user || {}), [k]: v }
+      listeners.forEach((fn) => fn())
+      return true
+    },
+    unset: async () => true,
+    writes
   }
 }
+
+let lastScope = null
 
 exportsRef.apply(ctx)
 
 const dict = registeredLocales.get('mem0')
 assert.ok(dict, 'locale 词典已注册'); ok('locale[mem0] 注册')
 assert.ok(dict.zh['card.title'] && dict.en['card.title']); ok('zh/en 卡片标题齐备')
-for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'topK', 'rerank', 'recallEnabled', 'recallWaitMs', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs']) {
+for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'topK', 'rerank', 'recallEnabled', 'recallWaitMs', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs', 'feedbackEnabled']) {
   assert.ok(dict.zh['field.' + key], '缺少 field.' + key)
   assert.ok(dict.zh['hint.' + key], '缺少 hint.' + key)
 }
-ok('29 个字段的 label/hint 文案全覆盖')
+ok('30 个字段的 label/hint 文案全覆盖')
 
 assert.equal(slotRegistrations.length, 1); ok('settings.plugin.item 槽位注册 ×1')
 const { def, component } = slotRegistrations[0].reg
@@ -141,5 +151,30 @@ assert.ok(snap.apiKey.overridden === true, 'user 层覆盖字段应显示已覆�
 assert.equal(snap.host.stagedText, 'http://127.0.0.1:8888'); ok('文本字段回显 section 值')
 assert.equal(snap.enabled.stagedBool, false); ok('布尔字段回显 section 值')
 assert.ok(elementCount > beforeCount); ok('jsx 渲染计数增长（真实走到组件体）')
+
+console.log('== 表单 save 流程（真链） ==')
+{
+  // 编辑为不同值 → dirty；save → 落库写 host + 脏标记清除
+  injected.edit('host', 'http://changed:9999')
+  let snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.shell.dirty, true); ok('编辑不同值后 dirty=true')
+  await injected.save()
+  snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.shell.dirty, false); ok('保存后 dirty=false')
+  assert.ok(lastScope.writes.some(([k]) => k === 'host'), 'host 写入已记录')
+  ok('scope.set 被调用（host 变更落库）')
+
+  // 暂存等于生效值：plan 空 → 无脏标记
+  const beforeWrites = lastScope.writes.length
+  injected.edit('host', 'http://127.0.0.1:8888') // 等于 mock section 原值
+  snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.shell.dirty, false); ok('暂存等于生效值时不产生脏标记')
+  await injected.save()
+  snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.shell.dirty, false); ok('空 plan save 不炸且保持干净')
+  assert.equal(lastScope.writes.length, beforeWrites); ok('无变化时不触发写入')
+}
+
+
 
 console.log('\n全部通过：' + PASS.length + ' 项 ✓')

@@ -55,12 +55,14 @@ export class TidalCoalescer {
     this.flushing = 0;
   }
 
-  /** 非阻塞入队；队满丢最旧。 */
+  /** 非阻塞入队；队满丢最旧。上限每次入队动态读取（设置卡可热调）。 */
   enqueue(item) {
-    if (this.queue.length >= this.queueMaxLen) {
+    const config = this.resolveConfig()
+    const maxLen = config.queueMaxLen > 0 ? Math.trunc(config.queueMaxLen) : this.queueMaxLen
+    if (this.queue.length >= maxLen) {
       this.queue.shift();
       this.stats.dropped += 1;
-      if (this.log.warn) this.log.warn('mem0 sync queue full (' + this.queueMaxLen + '), dropped oldest pending turn');
+      if (this.log.warn) this.log.warn('mem0 sync queue full (' + maxLen + '), dropped oldest pending turn');
     }
     this.queue.push(item);
   }

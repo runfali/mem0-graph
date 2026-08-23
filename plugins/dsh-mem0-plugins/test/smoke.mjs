@@ -203,6 +203,30 @@ console.log('== 单元：查询蒸馏 ==')
 }
 
 console.log('== 召回链路含蒸馏（超长消息）==')
+console.log('== 单元：双飞慢路径 ==')
+{
+  let slowCount = 0
+  // 临时替换 fetch：第一个蒸馏请求挂起，随后所有请求立即成功
+  const origFetch = globalThis.fetch
+  let released = false
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname
+    if (path.endsWith('/chat/completions') && !released && slowCount === 0) {
+      slowCount += 1
+      await new Promise((r) => setTimeout(r, 300)) // 慢响应：超过 retryAfterMs=50
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: '慢路径结果' } }] }) }
+    }
+    return origFetch(url, init)
+  }
+  const opts = { enabled: true, minChars: 10, inputMaxChars: 8000, baseUrl: 'http://mock-distill/v1', apiKey: 'x', model: 'm', timeoutMs: 5000, retryAfterMs: 50 }
+  const t0 = Date.now()
+  const out = await distillQuery('z'.repeat(600), opts)
+  const elapsed = Date.now() - t0
+  assert.ok(elapsed < 250, '双飞应先到先用（' + elapsed + 'ms 太慢）'); ok('双飞先完成者胜出（' + elapsed + 'ms）')
+  assert.ok(out === '部署端口配置' || out === '慢路径结果', '双飞结果被某一路成功携带，实际: ' + out); ok('双飞结果可确认')
+  globalThis.fetch = origFetch
+}
+
 console.log('== 单元：琐碎输入守卫 ==')
 {
   for (const t of ['hi', 'ok!', 'thanks.', '/compact', '继续', '', '   ']) {
@@ -300,11 +324,11 @@ env.setScope({ ...env.getScope(), enabled: true, recallWaitMs: 2000, requestTime
 
 console.log('== 启用后：写入链路 ==')
 {
-  const agent = { id: 'sess-A' }
-  await emit('session/event', { id: 'sess-A' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住：我的部署端口是 8888' }] } })
-  await emit('session/event', { id: 'sess-A' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，记住了。' }] } })
+  const agent = { id: 'sess-W' }
+  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住：我的部署端口是 8888' }] } })
+  await emit('session/event', { id: 'sess-W' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，记住了。' }] } })
   // 插件通知不应被当作用户输入
-  await emit('session/event', { id: 'sess-A' }, { type: 'user/message', message: { source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: '文件变更通知' }] } })
+  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: '文件变更通知' }] } })
   await emit('agent/turn-stopping', { agent, turn: 1 })
 
   const memCallsBefore = fetchCalls.filter((c) => c.path === '/memories').length
@@ -323,6 +347,18 @@ console.log('== 启用后：写入链路 ==')
   assert.equal(lastBody.metadata.channel, 'dsh'); ok('metadata.channel=dsh 盖章')
 }
 
+console.log('== 单元：有界队列丢最旧 ==')
+{
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, queueMaxLen: 3 }),
+    addFn: async () => {}, log: {}
+  })
+  for (let i = 0; i < 5; i += 1) q.enqueue({ userId: 'u', sessionId: 's' + i, userContent: 'msg' + i, assistantContent: 'a' })
+  assert.equal(q.queue.length, 3); ok('队满只留 3 个')
+  assert.equal(q.stats.dropped, 2); ok('丢最旧计数 2')
+  assert.equal(q.queue[0].sessionId, 's2'); ok('最旧的 s0/s1 被丢')
+}
+
 console.log('== 中断轮不入记忆 ==')
 {
   const agent = { id: 'sess-I' }
@@ -335,6 +371,22 @@ console.log('== 中断轮不入记忆 ==')
   const after = fetchCalls.filter((c) => c.path === '/memories').length
   const bodies = fetchCalls.filter((c) => c.path === '/memories').map((c) => c.body)
   assert.ok(!bodies.some((b) => b && b.includes('写一半被打断')), '中断轮内容不得落库'); ok('中断轮整体跳过写入')
+}
+
+console.log('== 并发轮 user 文本配对 ==')
+{
+  const agent = { id: 'sess-P' }
+  // 两轮交错：turn1 claimed -> turn2 claimed -> turn1 结束 -> turn2 结束
+  await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: '第一轮的问题' }] }, turn: 1 })
+  await emit('agent/inbox/claimed', { agent, message: { content: [{ type: 'text', text: '第二轮的问题' }] }, turn: 2 })
+  const memBefore = fetchCalls.filter((c) => c.path === '/memories').length
+  await emit('agent/turn-stopping', { agent, turn: 1 })
+  await emit('agent/turn-stopping', { agent, turn: 2 })
+  await new Promise((r) => setTimeout(r, 1300))
+  const bodies = fetchCalls.filter((c) => c.path === '/memories').map((c) => c.body || '')
+  const joined = bodies.join('')
+  assert.ok(joined.includes('第一轮的问题'), 'turn1 配对错位'); ok('turn1 配对到自己的 user 文本')
+  assert.ok(joined.includes('第二轮的问题'), 'turn2 配对错位'); ok('turn2 配对到自己的 user 文本')
 }
 
 console.log('== 工具执行：search 成功形态 ==')

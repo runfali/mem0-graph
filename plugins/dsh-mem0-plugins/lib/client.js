@@ -188,7 +188,15 @@ window.__ModuleLoader__.load({
           const plan = self.plan();
           const runs = [];
           plan.forEach((item) => { if (item.run !== undefined) runs.push(item.run); });
-          if (plan.length === 0 || self.saving || runs.length !== plan.length) return;
+          if (plan.length === 0) {
+            // 暂存值等于生效值（如把 10 敲回 10）：没有可写项，直接清脏态
+            if (self.saving) return;
+            self.staged.clear();
+            self.failed = false;
+            self.publish();
+            return;
+          }
+          if (self.saving || runs.length !== plan.length) return;
           self.saving = true;
           self.failed = false;
           self.publish();

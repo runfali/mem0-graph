@@ -211,13 +211,19 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => ctx.on('agent/inbox/claimed', (payload) => {
     try {
       const s = spec()
+      // 无论召回是否开启，都按 (sessionId, turn) 记录真人输入文本，
+      // 供 turn-stopping 配对——并发多轮时避免 A 轮被 B 轮的 user 覆盖
+      const claimedText = textOfBlocks(payload.message && payload.message.content)
+      if (claimedText) {
+        userByTurn.set(payload.agent.id + '\u0000' + payload.turn, claimedText)
+        capMap(userByTurn)
+      }
       if (!s.enabled || !s.recallEnabled || !s.host) return
       if (breaker.open) return
-      const query = textOfBlocks(payload.message && payload.message.content)
-      if (!query || query.length < 2) return
+      if (!claimedText || claimedText.length < 2) return
       // 琐碎输入（问候/确认/斜杠命令）不值得召回——对齐 hermes is_trivial_prompt
-      if (isTrivialPrompt(query)) return
-      startPrefetch(payload.agent.id, query)
+      if (isTrivialPrompt(claimedText)) return
+      startPrefetch(payload.agent.id, claimedText)
     } catch (error) {
       log.debug('prefetch setup failed: ' + String((error && error.message) || error))
     }
@@ -266,7 +272,8 @@ export function apply(ctx, config = {}) {
         windowMs: s.coalesceWindowMs,
         maxTurns: s.coalesceMaxTurns,
         maxChars: s.coalesceMaxChars,
-        fastpathChars: s.fastpathChars
+        fastpathChars: s.fastpathChars,
+        queueMaxLen: s.queueMaxLen
       }
     },
     queueMaxLen: 50,
@@ -285,6 +292,7 @@ export function apply(ctx, config = {}) {
   /** 真人输入文本（按 session 覆盖）；助手回复文本（按 session+turn 覆盖）。 */
   const CAP_LIMIT = 256
   const lastUserBySession = new Map()
+  const userByTurn = new Map()
   const lastAssistantByTurn = new Map()
   const capMap = (map) => {
     while (map.size > CAP_LIMIT) map.delete(map.keys().next().value)
@@ -321,12 +329,14 @@ export function apply(ctx, config = {}) {
     try {
       const s = spec()
       const sessionId = payload.agent.id
-      const userText = lastUserBySession.get(sessionId) || ''
-      const assistantKey = sessionId + '\u0000' + payload.turn
+      const userTurnKey = sessionId + '\u0000' + payload.turn
+      const userText = userByTurn.get(userTurnKey) || lastUserBySession.get(sessionId) || ''
+      const assistantKey = userTurnKey
       const assistantEntry = lastAssistantByTurn.get(assistantKey)
       const assistantText = assistantEntry ? assistantEntry.text : ''
       const interrupted = assistantEntry ? assistantEntry.interrupted === true : false
       lastUserBySession.delete(sessionId)
+      userByTurn.delete(userTurnKey)
       lastAssistantByTurn.delete(assistantKey)
       if (!s.enabled || !s.syncEnabled || !s.host) return
       // 中断的轮次整体不入记忆：部分输出会污染未来召回
@@ -357,6 +367,7 @@ export function apply(ctx, config = {}) {
       clearInterval(timer)
       pendingRecall.clear()
       lastUserBySession.clear()
+      userByTurn.clear()
       lastAssistantByTurn.clear()
       coalescer.flushAll('dispose')
     }

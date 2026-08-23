@@ -149,8 +149,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 
 ```bash
 cd /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
-node test/smoke.mjs         # Host 半：apply 全链路 + 工具执行 + 召回/写入链路（28 项）
-node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单（16 项）
+node test/smoke.mjs         # Host 半：apply 全链路 + 工具执行 + 召回/写入链路 + 蒸馏 + 卫生（63 项）
+node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单 save 真链（22 项）
 ```
 
 真机联测记录（2026-08-23，本机 mem0-dev 栈）：
