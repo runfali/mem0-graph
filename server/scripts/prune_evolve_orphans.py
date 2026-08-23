@@ -14,7 +14,6 @@ Environment:
 
 import logging
 import os
-import sys
 
 from sqlalchemy import text
 

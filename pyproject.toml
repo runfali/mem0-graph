@@ -154,6 +154,11 @@ exclude = ["openmemory/"]
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
+[tool.ruff.lint.per-file-ignores]
+# 测试与运维脚本先插 sys.path 再导入 server 平铺模块，E402 属预期模式
+"tests/**" = ["E402"]
+"server/scripts/**" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["mem0", "mem0_cli"]
 

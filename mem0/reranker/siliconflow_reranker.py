@@ -1,9 +1,10 @@
-import json
 """SiliconFlow native reranker using their /v1/rerank API directly via HTTP."""
+
+import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
 
@@ -205,10 +206,9 @@ class SiliconFlowReranker(BaseReranker):
 
         # 全局排序并取 top_k
         all_reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
-        if top_k:
-            all_reranked = all_reranked[:top_k]
-        elif self.config.top_k:
-            all_reranked = all_reranked[:self.config.top_k]
+        # final_top_k 已含三级兜底：入参 > 配置 > 全量
+        if final_top_k:
+            all_reranked = all_reranked[:final_top_k]
 
         logger.info("Rerank done: final=%d", len(all_reranked))
         return all_reranked

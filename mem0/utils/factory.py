@@ -2,6 +2,7 @@ import importlib
 import inspect
 from typing import Dict, Optional, Union
 
+from mem0.configs.rerankers.siliconflow import SiliconFlowRerankerConfig
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 from mem0.configs.llms.anthropic import AnthropicConfig
 from mem0.configs.llms.aws_bedrock import AWSBedrockConfig
@@ -221,7 +222,6 @@ class VectorStoreFactory:
         return instance
 
 
-from mem0.configs.rerankers.siliconflow import SiliconFlowRerankerConfig
 
 class RerankerFactory:
     """

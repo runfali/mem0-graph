@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import re
 import time as _time
 from collections import OrderedDict
 

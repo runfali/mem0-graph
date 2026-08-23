@@ -118,7 +118,7 @@ def test_type_error_fallback_calls_without_timeout():
 def test_init_disables_client_retries():
     primary = ClientfulLLM(result="ok")
     fb1 = ClientfulLLM(result="fb1")
-    fallback = _make(primary, fb1)
+    _make(primary, fb1)  # construction is the behavior under test: retries disabled at init
 
     assert primary.client.max_retries == 0
     assert fb1.client.max_retries == 0

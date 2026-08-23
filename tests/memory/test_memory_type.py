@@ -8,7 +8,6 @@ is untouched in this batch (zero behavior change on search).
 import json
 from unittest.mock import MagicMock
 
-import pytest
 
 from mem0.memory.main import Memory
 

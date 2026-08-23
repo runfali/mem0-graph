@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mem0.memory.main import AsyncMemory, Memory, _build_type_weights, _map_type_filter
+from mem0.memory.main import AsyncMemory, Memory, _build_type_weights
 from mem0.utils.scoring import score_and_rank
 
 

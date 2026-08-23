@@ -4,7 +4,6 @@ Fully mocked: DB session is a MagicMock whose execute() returns rows via
 .all() and totals via .scalar(); auth and get_current_config are overridden.
 """
 
-import importlib
 import os
 import sys
 from types import SimpleNamespace

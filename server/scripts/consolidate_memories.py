@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)

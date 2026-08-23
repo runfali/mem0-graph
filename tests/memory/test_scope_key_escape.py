@@ -11,7 +11,6 @@ The escaping lives in the shared `_build_session_scope` helper used by
 both sync and async code paths, so one test suite covers both.
 """
 
-import pytest
 
 from mem0.memory.main import _build_session_scope
 

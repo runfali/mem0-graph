@@ -485,7 +485,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 )
                 lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
                 if lines:
-                    body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
+                    body = "## Mem0 Memory\n" + "\n".join(f"- {line_text}" for line_text in lines)
                 self._record_success()
             except Exception as e:
                 self._record_failure()

@@ -17,7 +17,7 @@ import pytest
 
 from mem0.memory import main as memory_main
 from mem0.memory.main import AsyncMemory, Memory
-from mem0.memory.temporal_intent import detect_temporal_intent, effective_date, intent_to_range
+from mem0.memory.temporal_intent import effective_date, intent_to_range
 
 _SHANGHAI_TODAY = datetime.now(ZoneInfo("Asia/Shanghai")).date()
 

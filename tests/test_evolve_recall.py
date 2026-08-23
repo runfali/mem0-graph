@@ -37,8 +37,8 @@ def _trace(depth="full", **stage_counts):
     return {
         "depth": depth,
         "stages": [
-            {"stage": s, "count": c, "latency_ms": l}
-            for s, (c, l) in stage_counts.items()
+            {"stage": s, "count": c, "latency_ms": lat}
+            for s, (c, lat) in stage_counts.items()
         ],
     }
 

@@ -14,7 +14,7 @@ from models import (
 )
 from pydantic import BaseModel
 from server_state import get_current_config
-from sqlalchemy import String, and_, case, column, func, or_, select, table, text
+from sqlalchemy import ColumnElement, String, and_, case, column, func, or_, select, table, text
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/evolve", tags=["evolve"])
@@ -64,7 +64,7 @@ def _authorize_memory_write(request: Request, user: User, memory_id: str, db: Se
     return owner
 
 
-def _memory_still_exists() -> "ColumnElement[bool]":
+def _memory_still_exists() -> ColumnElement[bool]:
     """EXISTS guard: salience row still has a live memory in the vector store.
 
     mem0_memories.id is uuid while EvolveSalience.memory_id is varchar(255), so
@@ -208,7 +208,7 @@ def evolve_report(
         total, zero, avg_score, avg_lat = db.execute(
             select(
                 func.count(EvolveQuery.id),
-                func.sum(case((EvolveQuery.is_zero_hit == True, 1), else_=0)),
+                func.sum(case((EvolveQuery.is_zero_hit.is_(True), 1), else_=0)),
                 func.avg(EvolveQuery.avg_score),
                 func.avg(EvolveQuery.latency_ms),
             ).where(EvolveQuery.created_at >= cutoff(d))
@@ -226,7 +226,7 @@ def evolve_report(
             func.date(EvolveQuery.created_at).label("day"),
             func.count(EvolveQuery.id),
             func.avg(EvolveQuery.avg_score),
-            func.sum(case((EvolveQuery.is_zero_hit == True, 1), else_=0)),
+            func.sum(case((EvolveQuery.is_zero_hit.is_(True), 1), else_=0)),
         )
         .where(EvolveQuery.created_at >= cutoff(trend_days))
         .group_by("day")
@@ -252,7 +252,7 @@ def evolve_report(
 
     zero_hit_rows = db.execute(
         select(EvolveQuery.query, func.count(EvolveQuery.id))
-        .where(EvolveQuery.is_zero_hit == True, EvolveQuery.created_at >= cutoff(1))
+        .where(EvolveQuery.is_zero_hit.is_(True), EvolveQuery.created_at >= cutoff(1))
         .group_by(EvolveQuery.query)
         .order_by(func.count(EvolveQuery.id).desc())
         .limit(10)

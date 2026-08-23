@@ -15,7 +15,6 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
-from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("prune_expired")

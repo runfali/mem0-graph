@@ -8,7 +8,6 @@ stale/idle list. INSERT-if-absent: repeated triggers are no-ops.
 
 import os
 import sys
-from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
