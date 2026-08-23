@@ -7,14 +7,14 @@
 # 安装/卸载/改配置后重启 dsh 生效（设置页内的改动即时生效，无需重启）。
 #
 # 本补丁只做一件事：把本插件的 provider 行挂进 profile 层，默认指向本机
-# 自托管 Mem0 server（http://127.0.0.1:8888），enabled=false 安全安装——
-# 装好后到「设置 → 插件配置 → Mem0 记忆」填 URL / API Key 并打开开关。
+# 自托管 Mem0 server（http://127.0.0.1:8888），enabled 走 schema 默认 true——
+# 装好即启用（本机 server 无鉴权时零配置直接工作；远程 server 需在设置页填
+# API Key）。要关闭记忆，在设置页关闭「启用插件」开关即可。
 #
 # 这些值是 settings 的 composition base 层；用户在设置页保存的值落在用户层，
 # 优先级更高。要改默认值可在 ~/.dsh/profiles/web/cordis.patch.yml 追加覆盖：
 #   - id: mem0
 #     config:
-#       enabled: true
 #       host: http://10.200.0.5:8888
 #       apiKey: your-admin-api-key
 
@@ -22,7 +22,7 @@
     - id: mem0
       name: dsh-mem0-plugins
       config:
-        enabled: false
+        # 不写 enabled：schema 默认 true（配置即启用）；用户可在设置页显式关闭
         host: http://127.0.0.1:8888
         apiKey: ''
         userId: dsh-user

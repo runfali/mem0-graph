@@ -34,7 +34,7 @@ export const inject = ['tools', 'systemPrompt']
 
 /** 设置命名空间的字段模式（也是 Settings 页面渲染/校验的依据）。 */
 export const Config = z.object({
-  enabled: z.boolean().default(false),
+  enabled: z.boolean().default(true),
   host: z.string().default('http://127.0.0.1:8888'),
   apiKey: z.string().default(''),
   userId: z.string().default('dsh-user'),
@@ -137,7 +137,7 @@ export function apply(ctx, config = {}) {
   const spec = () => {
     const value = current() || {}
     return {
-      enabled: value.enabled === true,
+      enabled: value.enabled !== false, // 默认值 true：配置即启用；显式关闭才为 false
       host: String(value.host || '').trim(),
       apiKey: String(value.apiKey || '').trim(),
       userId: String(value.userId || '').trim() || 'dsh-user',

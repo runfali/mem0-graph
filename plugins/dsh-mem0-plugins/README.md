@@ -33,19 +33,21 @@ dsh plugin --profile web add /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
 dsh plugin --profile web remove dsh-mem0-plugins
 ```
 
-装好后到 **设置 → 插件配置 → Mem0 记忆** 打开开关即可；设置页改动即时生效，
-无需重启。
+装好即默认启用（`enabled` 默认 `true`，指向本机 server 时零配置可用）；
+设置页改动即时生效，无需重启。要关闭记忆，在卡片里关掉「启用插件」开关——
+卡片描述行实时显示 **已启用/未启用 + host**，一眼可见。
 
 ## 设置项
 
-默认值（composition base）在 `cordis.patch.yml` 中声明：`enabled=false` 安全安装、
-`host=http://127.0.0.1:8888`。设置页保存的值落在用户层，优先级更高。
+默认值：`enabled=true`（schema 默认，patch 不覆盖——配置即启用）、
+`host=http://127.0.0.1:8888`、`apiKey=''`（本机 server 无鉴权时零配置可用）。
+设置页保存的值落在用户层，优先级更高。
 
 ### 连接与身份
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `enabled` | `false` | 总开关；关闭后工具调用会返回启用指引 |
+| `enabled` | `true` | 总开关，默认开启；关闭后不再召回/写入，工具调用提示未启用 |
 | `host` | `http://127.0.0.1:8888` | 自托管 server URL |
 | `apiKey` | 空 | 以 `X-API-Key` 头发送；`AUTH_DISABLED` 部署留空 |
 | `userId` | `dsh-user` | 记忆归属 user_id，跨会话共享同一份记忆 |

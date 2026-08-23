@@ -276,7 +276,7 @@ window.__ModuleLoader__.load({
       "reset": "重置",
       "invalid": "请输入有效数字",
       "field.enabled": "启用插件",
-      "hint.enabled": "总开关；关闭后不注册记忆行为（工具仍可见但会提示未启用）",
+      "hint.enabled": "总开关，默认开启（配置即启用）；关闭后不再召回/写入，工具调用会提示未启用",
       "field.host": "Mem0 服务地址",
       "hint.host": "自托管 server URL，如 http://127.0.0.1:8888 或 http://10.200.0.5:8888",
       "field.apiKey": "API Key（可留空）",

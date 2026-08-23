@@ -154,7 +154,7 @@ function makeCtx(config) {
 /** 手工把 patch base 与 Config 默认值合并（模拟 settings 解析结果）。 */
 function resolveConfigManually(schema, entry) {
   const defaults = {
-    enabled: false,
+    enabled: true,
     host: 'http://127.0.0.1:8888',
     apiKey: '',
     userId: 'dsh-user',
@@ -310,8 +310,9 @@ ok('全局四类事件监听挂载（agent/created 驱动 scoped 注册）')
 
 
 
-console.log('== 未配置(enabled=false)时工具给出明确指引 ==')
+console.log('== 显式关闭(enabled=false)时工具给出明确指引 ==')
 {
+  env.setScope({ ...env.getScope(), enabled: false })
   const searchTool = env.tools[0]
   const result = await searchTool.execute({ query: '测试' }, { signal: new AbortController().signal })
   assert.equal(result.ok, false)
