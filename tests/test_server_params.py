@@ -43,11 +43,31 @@ def _mock_memory():
 
 @pytest.fixture
 def client(_mock_memory):
-    """Return a TestClient wired to the server app with mocked Memory."""
-    import server.main as server_main
-    with patch.dict(os.environ, {"ADMIN_API_KEY": ""}):
+    """Return a TestClient wired to the server app with mocked Memory.
+
+    Reloads against a fully explicit env baseline so results never depend on
+    which other suites ran before (auth matrix leaves different flags behind).
+    AUTH_DISABLED=true + empty users table maps requests to the bootstrap
+    admin, giving open access — what these parameter-passing tests assume.
+    """
+    import auth as auth_module
+    import main as server_main
+    env = {
+        "ADMIN_API_KEY": "",
+        "AUTH_DISABLED": "true",
+        "JWT_SECRET": "test-jwt-secret-not-for-production",
+        "OPENAI_API_KEY": "test-key-not-used",
+    }
+    # Reload BOTH modules: main re-reads auth's constants on import, so
+    # refreshing main alone would inherit whatever the previous suite froze.
+    with patch.dict(os.environ, env, clear=False):
+        importlib.reload(auth_module)
         importlib.reload(server_main)
-    return TestClient(server_main.app)
+    yield TestClient(server_main.app)
+    # Restore conftest-seeded defaults so later suites start from baseline.
+    with patch.dict(os.environ, env, clear=False):
+        importlib.reload(auth_module)
+        importlib.reload(server_main)
 
 
 @pytest.fixture
@@ -493,7 +513,9 @@ class TestCallSignatureMatch:
         })
         assert resp.status_code == 200
         _, kwargs = mock_memory.search.call_args
-        valid_params = {"query", "top_k", "filters", "threshold", "rerank"}
+        # trace is always forwarded for RECALL-funnel observability (server pops
+        # it from the response before returning to clients).
+        valid_params = {"query", "top_k", "filters", "threshold", "rerank", "trace"}
         for key in kwargs:
             assert key in valid_params, f"Unexpected kwarg '{key}' forwarded to Memory.search()"
         assert kwargs["filters"]["user_id"] == "u1"

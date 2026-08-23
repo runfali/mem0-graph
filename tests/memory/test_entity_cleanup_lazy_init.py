@@ -43,7 +43,9 @@ def _setup_factory_mocks(mocker, entity_store_create_exc=None):
     )
     mocker.patch("mem0.utils.factory.EmbedderFactory.create", mocker.MagicMock())
     mocker.patch("mem0.utils.factory.LlmFactory.create", mocker.MagicMock())
-    mocker.patch("mem0.memory.storage.SQLiteManager", mocker.MagicMock())
+    # Patch the name bound in mem0.memory.main (from ... import SQLiteManager),
+    # not the defining module — patching the latter has no effect.
+    mocker.patch("mem0.memory.main.SQLiteManager", mocker.MagicMock())
     # Disable telemetry so __init__ doesn't consume a second
     # VectorStoreFactory.create call for the migration/telemetry store.
     mocker.patch("mem0.memory.main.MEM0_TELEMETRY", False)

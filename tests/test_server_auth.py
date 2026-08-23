@@ -47,10 +47,25 @@ def _mock_memory():
 
 
 def _load_app(env_overrides: dict):
-    """Reload server/main.py with the given environment and return the FastAPI app."""
-    import server.main as server_main
+    """Reload server/main.py with a deterministic environment.
 
-    with patch.dict(os.environ, env_overrides, clear=False):
+    auth.py freezes JWT_SECRET / AUTH_DISABLED into module constants at first
+    import, and main.py re-uses those constants on its own reload — so both
+    modules must be reloaded together or the matrix silently reuses whichever
+    values happened to be current the first time auth was imported.
+    """
+    import auth as auth_module
+    import main as server_main
+
+    env = {
+        "ADMIN_API_KEY": "",
+        "AUTH_DISABLED": "",
+        "JWT_SECRET": "test-jwt-secret-not-for-production",
+        "OPENAI_API_KEY": "test-key-not-used",
+    }
+    env.update(env_overrides)
+    with patch.dict(os.environ, env, clear=False):
+        importlib.reload(auth_module)
         importlib.reload(server_main)
     return server_main.app
 
@@ -62,9 +77,13 @@ def _load_app(env_overrides: dict):
 class TestAuthDisabled:
     """All endpoints should be freely accessible when ADMIN_API_KEY is empty."""
 
+    API_KEY = "test-admin-key-value"
+
     @pytest.fixture(autouse=True)
     def _setup(self, _mock_memory):
-        self.app = _load_app({"ADMIN_API_KEY": ""})
+        # Current semantics: auth-off requires the explicit AUTH_DISABLED flag
+        # (an empty ADMIN_API_KEY alone leaves auth enabled with no admin).
+        self.app = _load_app({"ADMIN_API_KEY": self.API_KEY, "AUTH_DISABLED": "true"})
         self.client = TestClient(self.app)
         self.mock = _mock_memory
 
@@ -119,9 +138,11 @@ class TestAuthDisabled:
         assert resp.status_code == 200
 
     def test_supplying_key_still_works_when_auth_disabled(self):
-        """A client that sends X-API-Key should not be penalized when auth is off."""
+        """A client sending the configured ADMIN_API_KEY passes even with
+        AUTH_DISABLED=true (config-authenticated callers map to the bootstrap
+        admin when the users table is empty)."""
         resp = self.client.get(
-            "/memories/mem-1", headers={"X-API-Key": "some-random-key"}
+            "/memories/mem-1", headers={"X-API-Key": self.API_KEY}
         )
         assert resp.status_code == 200
 
@@ -184,7 +205,7 @@ class TestAuthEnabled:
 
     def test_401_includes_www_authenticate_header(self):
         resp = self.client.get("/memories/mem-1")
-        assert resp.headers.get("www-authenticate") == "ApiKey"
+        assert resp.headers.get("www-authenticate") == "Bearer"
 
     def test_near_miss_key_rejected(self):
         """Key that differs by one character should be rejected."""
@@ -338,7 +359,7 @@ class TestAuthenticatedCRUDFlow:
         # 3. Read all
         resp = self._authed("GET", "/memories", params={"user_id": "alice"})
         assert resp.status_code == 200
-        self.mock.get_all.assert_called_once_with(user_id="alice")
+        self.mock.get_all.assert_called_once_with(filters={"user_id": "alice"}, show_expired=False)
 
         # 4. Search
         resp = self._authed("POST", "/search", json={"query": "pizza", "user_id": "alice"})
@@ -425,16 +446,21 @@ class TestAuthEdgeCases:
         resp = client.get("/memories/mem-1", headers={"X-API-Key": "wrong"})
         assert resp.status_code == 401
 
-    def test_key_env_var_not_present_at_all(self):
-        """When the env var is completely absent, auth should be disabled."""
-        import server.main as server_main
+    def test_key_env_var_not_present_at_all(self, caplog):
+        """Absent ADMIN_API_KEY (and no AUTH_DISABLED) keeps auth ENABLED:
+        protected endpoints return 401 and the log explains how to configure."""
+        import main as server_main
         env = os.environ.copy()
         env.pop("ADMIN_API_KEY", None)
-        with patch.dict(os.environ, env, clear=True):
-            importlib.reload(server_main)
-        client = TestClient(server_main.app)
-        resp = client.get("/memories/mem-1")
-        assert resp.status_code != 401
+        with caplog.at_level(logging.WARNING):
+            with patch.dict(os.environ, {**env, "AUTH_DISABLED": ""}, clear=True):
+                importlib.reload(server_main)
+        try:
+            client = TestClient(server_main.app)
+            resp = client.get("/memories/mem-1")
+            assert resp.status_code == 401
+        finally:
+            importlib.reload(server_main)  # restore deterministic state for later tests
 
     def test_switching_from_enabled_to_disabled(self):
         """Simulates a server restart with auth toggled off."""
@@ -444,7 +470,7 @@ class TestAuthEdgeCases:
         assert c1.get("/memories/mem-1").status_code == 401
 
         # Then: auth disabled
-        app2 = _load_app({"ADMIN_API_KEY": ""})
+        app2 = _load_app({"ADMIN_API_KEY": "", "AUTH_DISABLED": "true"})
         c2 = TestClient(app2)
         assert c2.get("/memories/mem-1").status_code != 401
 
@@ -482,13 +508,13 @@ class TestStartupLogging:
 
     def test_warning_when_auth_disabled(self, caplog):
         with caplog.at_level(logging.WARNING):
-            _load_app({"ADMIN_API_KEY": ""})
-        assert any("UNSECURED" in r.message for r in caplog.records)
+            _load_app({"ADMIN_API_KEY": "", "AUTH_DISABLED": "true"})
+        assert any("AUTH_DISABLED is enabled" in r.message for r in caplog.records)
 
-    def test_info_when_auth_enabled(self, caplog):
-        with caplog.at_level(logging.INFO):
-            _load_app({"ADMIN_API_KEY": "a-long-enough-secret-key"})
-        assert any("authentication enabled" in r.message for r in caplog.records)
+    def test_setup_hint_when_auth_enabled_without_admin(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            _load_app({"ADMIN_API_KEY": ""})
+        assert any("no admin configured" in r.message for r in caplog.records)
 
     def test_warning_when_key_too_short(self, caplog):
         with caplog.at_level(logging.WARNING):

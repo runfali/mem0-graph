@@ -58,7 +58,7 @@ def _mock_memory():
 
 def _load_app(env_overrides: dict):
     """Reload server/main.py with the given environment and return the module."""
-    import server.main as server_main
+    import main as server_main
 
     with patch.dict(os.environ, env_overrides, clear=False):
         importlib.reload(server_main)
@@ -225,12 +225,16 @@ class TestConfigurePersistsToConfigFile:
     """POST /configure atomically writes config.json; DB overrides no longer written."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, _mock_memory):
+    def _setup(self, _mock_memory, tmp_path):
         import server_state
 
         self.mock_save_config, self.mock_save_overrides = _mock_memory[1], _mock_memory[2]
         self.server_state = server_state
-        self.server_main = _load_app({"ADMIN_API_KEY": ""})
+        # Fresh config file per test: the merge assertions below depend on the
+        # on-disk baseline, so sharing one session-wide file leaks state.
+        self.server_main = _load_app(
+            {"ADMIN_API_KEY": "", "MEM0_CONFIG_PATH": str(tmp_path / "config.json")}
+        )
         self.client = TestClient(self.server_main.app)
 
     def test_configure_writes_merged_config_to_file(self):
