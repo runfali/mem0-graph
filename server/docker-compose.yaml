@@ -19,6 +19,7 @@ services:
     - ./alembic:/app/alembic:ro
     - ./server_state.py:/app/server_state.py:ro
     - ./evolve_cleanup.py:/app/evolve_cleanup.py:ro
+    - ./refine_memory.py:/app/refine_memory.py:ro
     - ./requirements.txt:/app/requirements.txt:ro
     - ../mem0:/app/mem0:ro
     - ./config.json:/app/config.json
