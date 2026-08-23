@@ -37,7 +37,7 @@ mem0 是一个为 AI Agent 提供持久记忆的开源库（存/搜/删 + LLM �
 |------|------|
 | 配置文件驱动 | `MEM0_CONFIG_PATH` 指向 config.json，纯配置部署，无需调 API |
 | 自动管理员 | 容器启动自动创建 `admin@mem0.dev` + 随机密码，日志可见 |
-| 97 个环境变量 | 连接池/超时/批量/并发/衰减/清理/反馈/深度路由/类型权重全覆盖 |
+| 80+ 个环境变量 | 连接池/超时/批量/并发/衰减/清理/反馈/深度路由/类型权重全覆盖 |
 | 中文全链路 | 记忆提取/图实体/图关系/BM25 分词全汉化 |
 | Embedder 兼容 | VoyageAI base64 自动适配；pgvector 维度自动检测 |
 | Reranker | SiliconFlow 原生支持 + 分数阈值过滤 |
@@ -455,7 +455,7 @@ MEM0_TYPE_WEIGHT_OBSERVATIONS=1.0     # OBSERVATIONS 类型排序权重
 MEM0_TYPE_WEIGHT_DECISIONS=1.0        # DECISIONS 类型排序权重
 ```
 
-全部 97 个变量的完整清单与性能调优说明见 [server/README.md](server/README.md)。
+全部 80+ 个变量的完整清单与性能调优说明见 [server/README.md](server/README.md)。
 
 ---
 
