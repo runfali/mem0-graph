@@ -29,11 +29,16 @@ def _collection_name() -> str:
 
 
 def _memory_owner(db: Session, memory_id: str) -> Optional[str]:
-    """Return the payload user_id of a memory, or None if it does not exist.
+    """Return the payload user_id of a memory, or None if unknown.
 
-    mem0_memories.id is uuid while the path parameter is a string; CAST keeps
-    the comparison portable across Postgres and the sqlite test doubles.
+    Fast path reads the indexed evolve_salience.user_id cache (stamped at
+    add time); falls back to a payload lookup in the vector-store table for
+    rows written before the column existed. mem0_memories.id is uuid while
+    memory ids are strings, so the fallback casts (CAST(id AS VARCHAR)).
     """
+    salience = db.get(EvolveSalience, memory_id)
+    if salience is not None and salience.user_id:
+        return salience.user_id
     row = db.execute(
         text(f"SELECT payload->>'user_id' FROM {_collection_name()} WHERE CAST(id AS VARCHAR) = :mid LIMIT 1"),
         {"mid": memory_id},
@@ -41,19 +46,22 @@ def _memory_owner(db: Session, memory_id: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def _authorize_memory_write(request: Request, user: User, memory_id: str, db: Session) -> None:
+def _authorize_memory_write(request: Request, user: User, memory_id: str, db: Session) -> Optional[str]:
     """Scope salience writes to memories owned by the caller.
 
     Admins, the ADMIN_API_KEY and AUTH_DISABLED callers keep global access;
     everyone else may only touch their own memories. A missing or foreign
-    memory yields 404 so existence is not leaked.
+    memory yields 404 so existence is not leaked. Returns the resolved owner
+    (None for global-access callers or unknown owners) so callers can stamp
+    it onto the rows they write.
     """
     auth_type = getattr(request.state, "auth_type", "none")
     if auth_type in {"admin_api_key", "disabled"} or user.role == "admin":
-        return
+        return None
     owner = _memory_owner(db, memory_id)
     if owner is None or owner != str(user.id):
         raise HTTPException(status_code=404, detail="Memory not found.")
+    return owner
 
 
 def _memory_still_exists() -> "ColumnElement[bool]":
@@ -102,10 +110,11 @@ def submit_feedback(
     Adjusts only the salience score; memory content is never touched, so a
     misreport is reversible.
     """
-    _authorize_memory_write(request, user, body.memory_id, db)
+    owner = _authorize_memory_write(request, user, body.memory_id, db)
     now = datetime.now(timezone.utc)
     feedback = EvolveFeedback(
         memory_id=body.memory_id,
+        user_id=owner,
         feedback_type=body.feedback_type,
         source=body.source,
         note=body.note,
@@ -116,8 +125,13 @@ def submit_feedback(
 
     salience = db.get(EvolveSalience, body.memory_id)
     if salience is None:
-        salience = EvolveSalience(memory_id=body.memory_id, salience_score=1.0, updated_at=now)
+        salience = EvolveSalience(
+            memory_id=body.memory_id, user_id=owner, salience_score=1.0, updated_at=now
+        )
         db.add(salience)
+    elif salience.user_id is None and owner:
+        # Backfill the owner cache on first touch of a legacy row.
+        salience.user_id = owner
     old_score = salience.salience_score
     new_score = round(min(max(old_score + DELTAS[body.feedback_type], MIN_SCORE), MAX_SCORE), 4)
     salience.salience_score = new_score
@@ -150,13 +164,18 @@ def retain_memory(
     Bumps last_access_at so the stale (>14 days unrecalled) list drops it.
     Memory content and salience score are untouched.
     """
-    _authorize_memory_write(request, user, memory_id, db)
+    owner = _authorize_memory_write(request, user, memory_id, db)
     now = datetime.now(timezone.utc)
     salience = db.get(EvolveSalience, memory_id)
     if salience is None:
-        salience = EvolveSalience(memory_id=memory_id, last_access_at=now, updated_at=now)
+        salience = EvolveSalience(
+            memory_id=memory_id, user_id=owner, last_access_at=now, updated_at=now
+        )
         db.add(salience)
     else:
+        if salience.user_id is None and owner:
+            # Backfill the owner cache on first touch of a legacy row.
+            salience.user_id = owner
         salience.last_access_at = now
         salience.updated_at = now
     db.commit()

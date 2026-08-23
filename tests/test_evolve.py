@@ -214,3 +214,46 @@ def test_feedback_allows_missing_payload_for_admin():
     client = _make_scoped_client(role="admin")
     resp = _post(client, memory_id="not-in-table", feedback_type="useful")
     assert resp.status_code == 200
+
+
+def test_feedback_stamps_owner_on_rows():
+    """Non-admin feedback stamps the resolved owner onto feedback+salience."""
+    client = _make_scoped_client(role="user")
+    resp = _post(client, memory_id="m-mine", feedback_type="useful")
+    assert resp.status_code == 200
+    mine = str(uuid.UUID(int=2))
+    with client[1]() as db:
+        row = db.get(EvolveSalience, "m-mine")
+        assert row.user_id == mine
+        feedback = db.scalars(select(EvolveFeedback).where(EvolveFeedback.memory_id == "m-mine")).first()
+        assert feedback is not None
+        assert feedback.user_id == mine
+
+
+def test_retain_allowed_via_salience_owner_cache_alone():
+    """Fast path: a salience row with the owner suffices, no payload row needed."""
+    client = _make_scoped_client(role="user")
+    with client[1]() as db:
+        db.add(EvolveSalience(memory_id="m-cache-only", user_id=str(uuid.UUID(int=2)), salience_score=1.0))
+        db.commit()
+    resp = client[0].post("/evolve/memory/m-cache-only/retain")
+    assert resp.status_code == 200
+
+
+def test_retain_rejected_for_foreign_salience_cache():
+    client = _make_scoped_client(role="user")
+    with client[1]() as db:
+        db.add(EvolveSalience(memory_id="m-cache-foreign", user_id=str(uuid.UUID(int=3)), salience_score=1.0))
+        db.commit()
+    resp = client[0].post("/evolve/memory/m-cache-foreign/retain")
+    assert resp.status_code == 404
+
+
+def test_admin_write_does_not_stamp_owner():
+    """Global-access callers leave user_id NULL rather than guessing one."""
+    client = _make_scoped_client(role="admin")
+    resp = client[0].post("/evolve/memory/m-mine/retain")
+    assert resp.status_code == 200
+    with client[1]() as db:
+        row = db.get(EvolveSalience, "m-mine")
+        assert row.user_id is None

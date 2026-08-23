@@ -130,6 +130,22 @@ def _attach_delete_cleanup(memory: Memory) -> Memory:
     return memory
 
 
+def _resolve_memory_owner(memory_id: str) -> str | None:
+    """Best-effort owner lookup from the vector-store payload.
+
+    Used to stamp evolve_salience.user_id at write time so later ownership
+    checks can run off the indexed column instead of re-querying payloads.
+    Any failure yields None — registration must never break the add flow.
+    """
+    try:
+        row = get_memory_instance().vector_store.get(vector_id=memory_id)
+        payload = getattr(row, "payload", None) or {}
+        value = payload.get("user_id")
+        return str(value) if value is not None else None
+    except Exception:
+        return None
+
+
 def _register_salience_on_add(session_factory, memory_id: str) -> None:
     """Insert an evolve_salience row for a freshly added memory (best-effort).
 
@@ -137,7 +153,8 @@ def _register_salience_on_add(session_factory, memory_id: str) -> None:
     never-searched memories never surfaced in the stale/idle list. Now they are
     registered at write time. INSERT-if-absent (repeated triggers from e.g.
     refine apply are no-ops); failures are swallowed so a broken registration
-    never breaks the add flow.
+    never breaks the add flow. The memory's payload user_id is stamped as the
+    row-level owner when resolvable.
     """
     if session_factory is None:
         return
@@ -152,6 +169,7 @@ def _register_salience_on_add(session_factory, memory_id: str) -> None:
             session.add(
                 EvolveSalience(
                     memory_id=memory_id,
+                    user_id=_resolve_memory_owner(memory_id),
                     access_count=0,
                     last_access_at=now,
                     salience_score=1.0,

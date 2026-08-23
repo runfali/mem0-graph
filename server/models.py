@@ -79,6 +79,9 @@ class EvolveFeedback(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     memory_id: Mapped[str] = mapped_column(String(255), index=True)
+    # Row-level owner (payload user_id of the target memory) so ownership
+    # checks and per-user analytics don't need vector-store re-queries.
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     feedback_type: Mapped[str] = mapped_column(String(16))
     source: Mapped[str] = mapped_column(String(16), default="manual")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -89,6 +92,9 @@ class EvolveSalience(Base):
     __tablename__ = "evolve_salience"
 
     memory_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    # Row-level owner (payload user_id of the memory), stamped by the
+    # on_memory_added hook at write time and lazily on later touches.
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     salience_score: Mapped[float] = mapped_column(Float, default=1.0)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_access_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

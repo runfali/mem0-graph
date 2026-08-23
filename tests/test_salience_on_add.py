@@ -103,3 +103,37 @@ class TestAttachMemoryAddedCleanup:
 
         # Must not raise even though the registration write fails.
         memory.on_memory_added("mem-1")
+
+
+class TestOwnerStampingOnAdd:
+    def test_owner_stamped_from_vector_payload(self, monkeypatch):
+        Session = _make_session_factory()
+        monkeypatch.setattr(server_state, "_session_factory", Session)
+        fake_memory = MagicMock()
+        fake_memory.vector_store.get.return_value = MagicMock(payload={"user_id": "user-9"})
+        monkeypatch.setattr(server_state, "get_memory_instance", lambda: fake_memory)
+        memory = MagicMock()
+        server_state._attach_memory_added_cleanup(memory)
+
+        memory.on_memory_added("mem-owned")
+
+        with Session() as db:
+            row = db.get(EvolveSalience, "mem-owned")
+            assert row is not None
+            assert row.user_id == "user-9"
+
+    def test_owner_left_null_when_unresolvable(self, monkeypatch):
+        Session = _make_session_factory()
+        monkeypatch.setattr(server_state, "_session_factory", Session)
+        fake_memory = MagicMock()
+        fake_memory.vector_store.get.side_effect = RuntimeError("store down")
+        monkeypatch.setattr(server_state, "get_memory_instance", lambda: fake_memory)
+        memory = MagicMock()
+        server_state._attach_memory_added_cleanup(memory)
+
+        memory.on_memory_added("mem-orphan")  # must not raise
+
+        with Session() as db:
+            row = db.get(EvolveSalience, "mem-orphan")
+            assert row is not None
+            assert row.user_id is None
