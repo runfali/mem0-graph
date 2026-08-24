@@ -78,7 +78,11 @@ const METADATA_CHANNEL = 'dsh'
 const RECALL_REMINDER = (
   '[mem0 requirement] This step MUST call mem0_search before producing any final answer. ' +
   'Run one or several searches with different wording as needed, then answer using the ' +
-  'recalled memories together with your own knowledge. Do not skip the search.'
+  'recalled memories together with your own knowledge. Do not skip the search. ' +
+  'CRITICAL LANGUAGE RULE: query language MUST match the user message language — ' +
+  'if the user writes in Chinese, search in Chinese (e.g. Chinese keywords); ' +
+  'NEVER translate Chinese to English; keep proper nouns verbatim. ' +
+  'Most memories are in Chinese, English-only queries will miss them.'
 )
 
 /** 数值防御性收敛（外部编辑 settings.yaml 时兜底）。 */
@@ -225,6 +229,9 @@ export function apply(ctx, config = {}) {
         const firstText = textOfBlocks(freshUser.content)
         if (isTrivialPrompt(firstText)) return decision // 琐碎输入（问候/确认）不打扰
         const reminder = {
+          id: globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function'
+            ? globalThis.crypto.randomUUID()
+            : ('mem0-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)),
           role: 'user',
           content: [{ type: 'text', text: RECALL_REMINDER }],
           source: {
@@ -372,6 +379,10 @@ export function apply(ctx, config = {}) {
         'having searched.\n' +
         'For multi-part or multi-hop questions, run several searches with different wording ' +
         'and follow up on what earlier results reveal; one search is rarely enough.\n' +
+        'LANGUAGE RULE (critical): mem0_search query MUST be in the SAME language as the user message. ' +
+        'Most memories are in Chinese — if the user writes in Chinese, you MUST search in Chinese ' +
+        '(e.g. 中文关键词). NEVER translate Chinese keywords to English; keep proper nouns verbatim. ' +
+        'English-only queries will miss Chinese memories.\n' +
         'Tools: mem0_search to find memories, mem0_add to store durable facts verbatim the ' +
         'moment the user states them, mem0_update and mem0_delete to correct or forget by ID.'
       )
@@ -417,9 +428,10 @@ export function apply(ctx, config = {}) {
       'Use this before answering any question that may depend on what you know about the user ' +
       '(preferences, facts, history, people, projects, past decisions). For multi-part or ' +
       'multi-hop questions, call it several times — vary the wording and run follow-up searches ' +
-      'on what earlier results reveal; one search is rarely enough.',
+      'on what earlier results reveal; one search is rarely enough. ' +
+      'CRITICAL: query language MUST match user message language — if user writes Chinese, query MUST be Chinese (e.g. 中文关键词), never translate to English; most memories are Chinese so English-only queries will miss.',
     parameters: {
-      query: { type: 'string', required: true, description: 'What to search for.' },
+      query: { type: 'string', required: true, description: 'What to search for. MUST use SAME language as user input — Chinese input => Chinese query, do NOT translate. Keep proper nouns verbatim.' },
       top_k: { type: 'integer', description: 'Max results (default from settings, max 50).' },
       rerank: { type: 'boolean', description: 'Rerank results for relevance (server must have a reranker configured).' }
     },
@@ -445,13 +457,40 @@ export function apply(ctx, config = {}) {
           timeoutMs: s.distillTimeoutMs,
           retryAfterMs: s.distillRetryAfterMs
         }, (info) => log.debug(info))
-        const results = await clientFor(s).search({
+        let results = await clientFor(s).search({
           query,
           filters: { user_id: s.userId },
           topK: args.top_k !== undefined ? clampInt(args.top_k, 1, 50, s.topK) : s.topK,
           rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
           signal: exec.signal
         })
+        // 兜底：模型若仍用纯英文查询而记忆多为中文，首搜为空时用最近的中文用户原文再搜一次（中文召回率远高于英文跨语）
+        if ((!results || results.length === 0) && !/[一-鿿]/.test(query)) {
+          let fallback = null
+          // 优先用最近的中文用户输入（session/event 捕获 + claimed 捕获均覆盖）
+          for (const v of [...lastUserBySession.values(), ...userByTurn.values()]) {
+            if (typeof v === 'string' && /[一-鿿]/.test(v)) fallback = v
+          }
+          // 兜底也检测 args.query 本身是否被模型翻译前的原文含中文已被 distill 丢弃的场景：此处 fallback 已覆盖
+          if (fallback) {
+            const q2 = fallback.slice(0, 400).trim()
+            if (q2 && q2 !== query) {
+              log.debug('mem0_search english miss, retry with chinese fallback: ' + q2.slice(0, 60))
+              try {
+                const r2 = await clientFor(s).search({
+                  query: q2,
+                  filters: { user_id: s.userId },
+                  topK: args.top_k !== undefined ? clampInt(args.top_k, 1, 50, s.topK) : s.topK,
+                  rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
+                  signal: exec.signal
+                })
+                if (r2 && r2.length > 0) results = r2
+              } catch (e) {
+                log.debug('fallback search failed: ' + String((e && e.message) || e))
+              }
+            }
+          }
+        }
         if (!results || results.length === 0) return toolOk('No relevant memories found.')
         return toolOk({
           count: results.length,

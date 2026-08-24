@@ -334,6 +334,10 @@ console.log('== 第一步强制搜索提醒 ==')
   assert.equal(d1.messages.length, 2); ok('第一步注入提醒消息')
   assert.equal(d1.messages[1].source.kind, 'plugin'); ok('提醒为 plugin-source（不写入记忆、UI 系统样式）')
   assert.match(d1.messages[1].content[0].text, /mem0_search/); ok('提醒文本包含 mem0_search 指令')
+  assert.ok(typeof d1.messages[1].id === 'string' && d1.messages[1].id.length > 0, '提醒缺 id（会导致 SessionPersistenceCorruptionError: lacks an identified message）'); ok('提醒消息携带 id（防持久化校验崩溃回归）')
+
+  // 语言约束：提醒文本必须包含「查询语言与用户一致」条款（中文记忆召回修复）
+  assert.match(d1.messages[1].content[0].text, /language/i); ok('提醒文本含语言约束条款（中文关键词检索）')
 
   // 同一 turn 内后段新输入（step=5，携带真人 user 消息）→ 也要提醒
   const d2 = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '另外还有个问题想问你' }], source: { kind: 'user' } }], turn: 1, step: 5, signal: null }, nextBase)
