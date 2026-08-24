@@ -123,8 +123,12 @@ dsh plugin --profile web remove dsh-mem0-plugins
   「上下文注入 · dsh-mem0-plugins · 【记忆提醒】回答前必须先调 mem0_search」，
   折叠行即直接可见，展开可见模型侧全文；不写记忆、琐碎轮跳过、
   开关 `forceRecallStep` 可关）——把「先搜再答」从模型自觉升级为流程默认。
-- **琐碎输入跳过**（`src/guards.js`，词表扩充成果保留，暂作复用库）：纯问候/确认/
-  斜杠命令词表三分类等价，只整串匹配、带正文永不误伤；
+- **琐碎输入跳过**（`src/guards.js`）：纯问候/确认/斜杠命令词表三分类等价，
+  只整串匹配、带正文永不误伤。守卫只拦「注入提醒」，拦不住模型自愿搜索——
+  常驻 usage 节的「先搜再答」硬命令会让模型在「好的/继续」轮照样调工具
+  （2026-08-24 实测缺陷）。修复（方案 A）：usage 节与 `mem0_search` 工具描述
+  同步写入**同一词表标准的豁免条款**——整串仅为应答/问候/推进时明确豁免搜索，
+  携带任何实义内容（如「继续帮我看看那个报错」）立即恢复强制；
 - **中断轮不入记忆**：被打断的半截回复不会写进 mem0（部分输出不是持久对话真相，
   对齐 hermes #15218）。
 
@@ -194,7 +198,7 @@ JSON 剥除与快速直写为 debug 级。熔断开合、直接写在失败时�
 
 ```bash
 cd /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
-node test/smoke.mjs         # Host 半：apply 全链路 + 工具（含蒸馏）+ 写入链路 + 强制提醒 + 卫生（76 项）
+node test/smoke.mjs         # Host 半：apply 全链路 + 工具（含蒸馏）+ 写入链路 + 强制提醒 + 卫生（81 项）
 node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单 save 真链（28 项）
 ```
 

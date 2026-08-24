@@ -295,6 +295,20 @@ const spawnAll = async (ids) => { const list = []; for (const id of ids) { const
 assert.equal(env.tools.length, 4); ok('注册四个工具（defineTool 真实编译通过）')
 assert.deepEqual(env.tools.map((t) => t.name), ['mem0_search', 'mem0_add', 'mem0_update', 'mem0_delete']); ok('工具名正确')
 assert.equal(env.sections.length, 1); ok('常驻使用说明节已注册')
+// 琐碎轮搜索豁免（方案 A）：强命令与守卫词表必须在提示词层对齐，
+// 否则模型在「好的/继续」轮仍会服从 MUST search 去调工具（2026-08-24 实测缺陷）
+{
+  const sectionText = env.sections[0].text()
+  assert.match(sectionText, /SOLE EXCEPTION/, '使用说明节缺琐碎轮豁免条款')
+  assert.match(sectionText, /继续/, '豁免条款未列中文推进词例')
+  assert.match(sectionText, /skip mem0_search/i, '豁免条款未指明跳过动作')
+  assert.match(sectionText, /继续帮我看看那个报错/, '豁免条款缺少「带实义内容不豁免」的反例')
+  ok('使用说明节含琐碎轮豁免（整串仅为应答/推进时跳过，带实义内容恢复强制）')
+  const searchDesc = env.tools[0].description
+  assert.match(searchDesc, /Skip this search ONLY when the entire user message/i, 'mem0_search 描述缺豁免提示')
+  assert.match(searchDesc, /any real content requires the search/, '工具描述缺反例约束')
+  ok('mem0_search 工具描述含同标准豁免提示')
+}
 for (const ev of ['agent/created', 'session/event', 'settings/updated']) {
   assert.ok(env.listeners.has(ev), '全局监听缺失: ' + ev)
 }

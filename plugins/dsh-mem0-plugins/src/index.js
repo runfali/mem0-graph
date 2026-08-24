@@ -4,8 +4,10 @@
  * 把 hermes mem0 插件的「自动记忆」移植到 DSH：
  *
  * 1. 工具驱动召回：使用说明节强引导模型在回答一切依赖记忆的问题前先调
- *    `mem0_search`（UI 工具卡即召回动作的可见呈现）；工具内部先蒸馏长文本
- *    提炼检索意图（超时/双飞/漂移防护/失败回退原文），再语义搜索。
+ *    `mem0_search`（UI 工具卡即召回动作的可见呈现）；整串仅为应答/问候/推进的
+ *    琐碎消息（与 guards.js 词表同一标准）在使用说明节中明确豁免搜索；
+ *    工具内部先蒸馏长文本提炼检索意图（超时/双飞/漂移防护/失败回退原文），
+ *    再语义搜索；英文空结果自动用最近中文上下文兜底重搜。
  * 2. 自动写入：`session/event` 按 source.kind 捕获真人输入与模型回复；
  *    claimed/turn-stopping 配对出队入潮浪并忆缓冲，合并为一次 infer:true
  *    批量写入，服务端 LLM 抽取事实。纯 JSON 消息替换占位符防污染。
@@ -377,6 +379,11 @@ export function apply(ctx, config = {}) {
         'history, people, projects, past decisions), you MUST call mem0_search first — ' +
         'do not rely on the chat window alone, and never claim there is no memory without ' +
         'having searched.\n' +
+        'SOLE EXCEPTION — bare acknowledgements/continuations: when the ENTIRE user message is only a short ' +
+        'acknowledgement, greeting or continuation carrying no question or task of its own ' +
+        '(e.g. 好的、嗯、收到、明白了、继续、下一步、开始吧、ok、continue、thanks), skip mem0_search and answer ' +
+        'directly — there is nothing memory-dependent to recall. The moment the message carries any actual ' +
+        'request or content (e.g. 继续帮我看看那个报错), the search requirement applies again.\n' +
         'For multi-part or multi-hop questions, run several searches with different wording ' +
         'and follow up on what earlier results reveal; one search is rarely enough.\n' +
         'LANGUAGE RULE (critical): mem0_search query MUST be in the SAME language as the user message. ' +
@@ -429,6 +436,8 @@ export function apply(ctx, config = {}) {
       '(preferences, facts, history, people, projects, past decisions). For multi-part or ' +
       'multi-hop questions, call it several times — vary the wording and run follow-up searches ' +
       'on what earlier results reveal; one search is rarely enough. ' +
+      'Skip this search ONLY when the entire user message is a bare acknowledgement/greeting/continuation ' +
+      'with no question or task of its own (好的、嗯、收到、继续、ok、continue) — any real content requires the search. ' +
       'CRITICAL: query language MUST match user message language — if user writes Chinese, query MUST be Chinese (e.g. 中文关键词), never translate to English; most memories are Chinese so English-only queries will miss.',
     parameters: {
       query: { type: 'string', required: true, description: 'What to search for. MUST use SAME language as user input — Chinese input => Chinese query, do NOT translate. Keep proper nouns verbatim.' },
