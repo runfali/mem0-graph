@@ -53,6 +53,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `userId` | `dsh-user` | 记忆归属 user_id，跨会话共享同一份记忆 |
 | `agentId` | `dsh` | 写入附带的 agent_id |
 
+![连接与身份配置](docs/screenshot/配置展示-1.png)
+
 ### 自动召回
 
 | 字段 | 默认 | 说明 |
@@ -69,6 +71,10 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `distillTimeoutMs` | `30000` | 蒸馏单次超时 |
 | `distillRetryAfterMs` | `20000` | 双飞触发阈值：首请求无响应超过该时长即并发第二请求，先完成者胜出 |
 
+![自动召回配置：条数/重排/蒸馏](docs/screenshot/配置展示-2.png)
+
+![自动召回配置：蒸馏模型/超时/双飞 与 自动写入起始](docs/screenshot/配置展示-3.png)
+
 ### 自动写入
 
 | 字段 | 默认 | 说明 |
@@ -82,6 +88,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `fastpathChars` | `2000` | 单轮超过该长度直接落库 |
 | `feedbackEnabled` | `true` | update/delete 成功后上报 evolve 反馈（可关） |
 
+![自动写入配置：合并阈值/快速直写/进化反馈](docs/screenshot/配置展示-4.png)
+
 ### 可靠性与超时
 
 | 字段 | 默认 | 说明 |
@@ -90,6 +98,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `breakerThreshold` | `5` | 连续失败达该次数熔断 |
 | `breakerCooldownMs` | `120000` | 熔断冷却时长 |
 | `requestTimeoutMs` | `300000` | 单请求总闸，search/add 共用（对齐 hermes `httpx timeout=300.0`） |
+
+![可靠性与超时配置：队列/熔断/总闸](docs/screenshot/配置展示-5.png)
 
 要改 profile 层默认值，在 `~/.dsh/profiles/web/cordis.patch.yml` 追加：
 
@@ -102,6 +112,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 ```
 
 ## 召回形态
+
+![记忆召回展示：第一步强制提醒注入 + mem0_search 中文关键词多路召回](docs/screenshot/记忆召回展示.png)
 
 - **显式工具链路**：不做后台静默预取（dsh 平台在消息回显后无内容注入钩子，
   详见 `docs/COMPARISON.md` 平台时序约束）；模型按 usage 引导先调 `mem0_search`，
