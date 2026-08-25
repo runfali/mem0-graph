@@ -101,9 +101,10 @@ async function callOnce(text, options, signal) {
  * @param {string} query 用户消息文本
  * @param {object} options {enabled,minChars,inputMaxChars,baseUrl,apiKey,model,timeoutMs,retryAfterMs}
  * @param {(info:string)=>void} [log]
+ * @param {AbortSignal} [signal] 外部取消信号（用户中断生成后蒸馏随之中止，不再白跑满超时）
  * @returns {Promise<string>} 用于 /search 的查询串（可能是原文）
  */
-export async function distillQuery(query, options, log) {
+export async function distillQuery(query, options, log, signal) {
   if (!options || options.enabled === false) return query
   if (!query || query.length <= (options.minChars > 0 ? options.minChars : 500)) return query
   if (!options.baseUrl) {
@@ -117,7 +118,15 @@ export async function distillQuery(query, options, log) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(new Error('distill timed out after ' + timeoutMs + ' ms')), timeoutMs)
     timer.unref && timer.unref()
-    return callOnce(query, options, controller.signal).finally(() => clearTimeout(timer))
+    // 外部取消联动（2026-08-25 审计 IDX4）：用户中断生成后蒸馏请求随之中止；
+    // 已中止的 signal 立即触发，保证重发分支也不会绕过取消
+    const onOuterAbort = () => controller.abort(signal && signal.reason !== undefined ? signal.reason : new Error('aborted'))
+    if (signal && signal.aborted) onOuterAbort()
+    else if (signal) signal.addEventListener('abort', onOuterAbort, { once: true })
+    return callOnce(query, options, controller.signal).finally(() => {
+      clearTimeout(timer)
+      if (signal) signal.removeEventListener('abort', onOuterAbort)
+    })
   }
 
   let firstResult = null // {value} | {error}

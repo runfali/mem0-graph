@@ -475,7 +475,8 @@ export function apply(ctx, config = {}) {
         ready(s)
         if (breaker.open) return toolFail('Mem0 temporarily unavailable (repeated failures); will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
         // 工具内蒸馏：query 超过阈值（用户可能把整段日志/长文直接丢给搜索）先提炼
-        // 检索意图（超时/双飞/漂移防护/失败回退原文全套保留），再语义搜索
+        // 检索意图（超时/双飞/漂移防护/失败回退原文全套保留），再语义搜索。
+        // signal 透传蒸馏：用户中断生成后，进行中的蒸馏请求随之取消（不再白跑）。
         const query = await distillQuery(args.query, {
           enabled: s.distillEnabled,
           minChars: s.distillMinChars,
@@ -485,7 +486,7 @@ export function apply(ctx, config = {}) {
           model: s.distillModel,
           timeoutMs: s.distillTimeoutMs,
           retryAfterMs: s.distillRetryAfterMs
-        }, (info) => log.debug(info))
+        }, (info) => log.debug(info), exec.signal)
         let results = await clientFor(s).search({
           query,
           filters: { user_id: s.userId },
@@ -493,33 +494,9 @@ export function apply(ctx, config = {}) {
           rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
           signal: exec.signal
         })
-        // 兜底：模型若仍用纯英文查询而记忆多为中文，首搜为空时用最近的中文用户原文再搜一次（中文召回率远高于英文跨语）
-        if ((!results || results.length === 0) && !/[一-鿿]/.test(query)) {
-          let fallback = null
-          // 优先用最近的中文用户输入（session/event 捕获 + claimed 捕获均覆盖）
-          for (const v of [...lastUserBySession.values(), ...userByTurn.values()]) {
-            if (typeof v === 'string' && /[一-鿿]/.test(v)) fallback = v
-          }
-          // 兜底也检测 args.query 本身是否被模型翻译前的原文含中文已被 distill 丢弃的场景：此处 fallback 已覆盖
-          if (fallback) {
-            const q2 = fallback.slice(0, 400).trim()
-            if (q2 && q2 !== query) {
-              log.debug('mem0_search english miss, retry with chinese fallback: ' + q2.slice(0, 60))
-              try {
-                const r2 = await clientFor(s).search({
-                  query: q2,
-                  filters: { user_id: s.userId },
-                  topK: args.top_k !== undefined ? clampInt(args.top_k, 1, 50, s.topK) : s.topK,
-                  rerank: typeof args.rerank === 'boolean' ? args.rerank : s.rerank,
-                  signal: exec.signal
-                })
-                if (r2 && r2.length > 0) results = r2
-              } catch (e) {
-                log.debug('fallback search failed: ' + String((e && e.message) || e))
-              }
-            }
-          }
-        }
+        // （2026-08-25 审计 IDX3：原「英文空结果时取最近中文用户原文重搜」的兜底已删——
+        // 它遍历的是全部会话的捕获缓存，多会话并行时会拿无关会话的文本当查询，
+        // 静默召回错位内容；中文查询质量已由 usage 节 + 提醒 + 工具描述三处强约束。）
         if (!results || results.length === 0) return toolOk('No relevant memories found.')
         return toolOk({
           count: results.length,

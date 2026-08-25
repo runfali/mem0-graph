@@ -216,18 +216,34 @@ console.log('== 审计回归：invalid 原文与保存期并发编辑 ==')
     await gate // 挂起直到测试放行
     return lastScope.set0(k, v)
   })
-  injected.edit('topK', '88')
+  injected.edit('topK', '38')
   const savePromise = injected.save().then(() => { saveDone = true })
   // 保存挂起中并发编辑
-  injected.edit('topK', '99')
+  injected.edit('topK', '49')
   release()
   await savePromise
   snap = injected.hooks.mem0.getSnapshot()
-  assert.equal(snap.topK.stagedText, '99'); ok('保存期并发编辑保留（引用级删除）')
+  assert.equal(snap.topK.stagedText, '49'); ok('保存期并发编辑保留（引用级删除）')
   assert.equal(snap.shell.dirty, true); ok('并发编辑后仍标记未保存')
-  assert.ok(lastScope.writes.some(([k, v]) => k === 'topK' && v === 88), '保存确实写了 topK'); ok('保存写入发生')
+  assert.ok(lastScope.writes.some(([k, v]) => k === 'topK' && v === 38), '保存确实写了 topK'); ok('保存写入发生')
   injected.discard()
   lastScope.overrideSet(null)
+}
+
+console.log('== 审计回归：数字字段范围 clamp（CL1）==')
+{
+  // 越界输入在编辑时即收敛到宿主 schema 范围，不再被 scope.set 静默拒绝
+  injected.edit('topK', '1000')
+  let snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.topK.stagedText, '50'); ok('越界上限自动 clamp：1000 → 50')
+  assert.equal(snap.topK.invalid, false); ok('clamp 后不标 invalid')
+  injected.discard()
+
+  injected.edit('queueMaxLen', '1')
+  snap = injected.hooks.mem0.getSnapshot()
+  assert.equal(snap.queueMaxLen.stagedText, '5'); ok('越界下限自动 clamp：1 → 5')
+  assert.equal(snap.queueMaxLen.invalid, false); ok('下限 clamp 不标 invalid')
+  injected.discard()
 }
 
 console.log('\n全部通过：' + PASS.length + ' 项 ✓')

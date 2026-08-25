@@ -26,7 +26,9 @@ window.__ModuleLoader__.load({
 
     // ---- 字段规格 ----
     // type: text | number | bool；number/bool 的 parse 把表单值规整为 schema 期望的 JSON 值；
-    // secret: true 的文本字段以 password 输入框呈现（apiKey 类，防旁观与 shoulder-surfing）
+    // secret: true 的文本字段以 password 输入框呈现（apiKey 类，防旁观与 shoulder-surfing）；
+    // number 的 min/max 与宿主 Config schema 一致：编辑时即 clamp，
+    // 否则越界值会被宿主 scope.set 静默拒绝 → 部分提交 + 笼统报错（2026-08-25 审计 CL1）
     const FIELDS = [
       { key: "enabled", type: "bool" },
       { key: "host", type: "text" },
@@ -34,28 +36,28 @@ window.__ModuleLoader__.load({
       { key: "userId", type: "text" },
       { key: "agentId", type: "text" },
       { key: "forceRecallStep", type: "bool" },
-      { key: "topK", type: "number" },
+      { key: "topK", type: "number", min: 1, max: 50 },
       { key: "rerank", type: "bool" },
       { key: "distillEnabled", type: "bool" },
-      { key: "distillMinChars", type: "number" },
-      { key: "distillInputMaxChars", type: "number" },
+      { key: "distillMinChars", type: "number", min: 1, max: 100000 },
+      { key: "distillInputMaxChars", type: "number", min: 200, max: 200000 },
       { key: "distillBaseUrl", type: "text" },
-      { key: "distillApiKey", type: "text" },
+      { key: "distillApiKey", type: "text", secret: true },
       { key: "distillModel", type: "text" },
-      { key: "distillTimeoutMs", type: "number" },
-      { key: "distillRetryAfterMs", type: "number" },
+      { key: "distillTimeoutMs", type: "number", min: 1000, max: 600000 },
+      { key: "distillRetryAfterMs", type: "number", min: 500, max: 120000 },
       { key: "syncEnabled", type: "bool" },
       { key: "coalesceEnabled", type: "bool" },
-      { key: "coalesceIdleMs", type: "number" },
-      { key: "coalesceWindowMs", type: "number" },
-      { key: "coalesceMaxTurns", type: "number" },
-      { key: "coalesceMaxChars", type: "number" },
-      { key: "fastpathChars", type: "number" },
+      { key: "coalesceIdleMs", type: "number", min: 500, max: 300000 },
+      { key: "coalesceWindowMs", type: "number", min: 1000, max: 600000 },
+      { key: "coalesceMaxTurns", type: "number", min: 1, max: 50 },
+      { key: "coalesceMaxChars", type: "number", min: 200, max: 200000 },
+      { key: "fastpathChars", type: "number", min: 200, max: 200000 },
       { key: "feedbackEnabled", type: "bool" },
-      { key: "queueMaxLen", type: "number" },
-      { key: "breakerThreshold", type: "number" },
-      { key: "breakerCooldownMs", type: "number" },
-      { key: "requestTimeoutMs", type: "number" }
+      { key: "queueMaxLen", type: "number", min: 5, max: 1000 },
+      { key: "breakerThreshold", type: "number", min: 1, max: 100 },
+      { key: "breakerCooldownMs", type: "number", min: 1000, max: 3600000 },
+      { key: "requestTimeoutMs", type: "number", min: 1000, max: 900000 }
     ];
 
     function parseFieldValue(field, raw) {
@@ -65,7 +67,11 @@ window.__ModuleLoader__.load({
       if (field.type === "number") {
         const n = Number(text);
         if (!Number.isFinite(n)) return { invalid: true, raw: text };
-        return { value: Math.trunc(n) };
+        // clamp 到宿主 schema 范围：越界值会被宿主 scope.set 静默拒绝（部分提交 +
+        // 笼统报错）；clamp 后与宿主 spec() 的 clampInt 行为一致，所见即所得
+        const min = typeof field.min === "number" ? field.min : -Infinity;
+        const max = typeof field.max === "number" ? field.max : Infinity;
+        return { value: Math.min(max, Math.max(min, Math.trunc(n))) };
       }
       return { value: text };
     }

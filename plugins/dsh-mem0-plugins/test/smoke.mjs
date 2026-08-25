@@ -261,6 +261,41 @@ console.log('== 单元：双飞慢路径 ==')
   globalThis.fetch = origFetch
 }
 
+console.log('== 单元：外部取消联动（IDX4 回归）==')
+{
+  // 挂起的蒸馏请求在外部 signal abort 后应立即中止（而非白跑满超时）
+  const origFetch = globalThis.fetch
+  let abortedSeen = false
+  globalThis.fetch = async (url, init = {}) => {
+    if (new URL(url).pathname.endsWith('/chat/completions')) {
+      // 真实 fetch 对已中止的 signal 立即以 reason 拒绝；mock 需同语义
+      if (init.signal && init.signal.aborted) {
+        abortedSeen = true
+        return Promise.reject(init.signal.reason || new Error('aborted'))
+      }
+      return new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          abortedSeen = true
+          reject(new Error('aborted'))
+        })
+      })
+    }
+    return origFetch(url, init)
+  }
+  const opts = { enabled: true, minChars: 10, inputMaxChars: 8000, baseUrl: 'http://mock-distill/v1', apiKey: 'x', model: 'm', timeoutMs: 30000, retryAfterMs: 5000 }
+  const outer = new AbortController()
+  const t0 = Date.now()
+  const outPromise = distillQuery('z'.repeat(600), opts, null, outer.signal)
+  await new Promise((r) => setTimeout(r, 30)) // 等请求挂起
+  outer.abort()
+  const out = await outPromise
+  const elapsed = Date.now() - t0
+  assert.equal(out, 'z'.repeat(600)); ok('外部取消后回退原文')
+  assert.ok(abortedSeen, '蒸馏 fetch 收到中止信号'); ok('外部 abort 联动到蒸馏请求')
+  assert.ok(elapsed < 500, '取消后立即返回而非等满超时（' + elapsed + 'ms）'); ok('取消即时生效')
+  globalThis.fetch = origFetch
+}
+
 console.log('== 单元：琐碎输入守卫 ==')
 {
   assert.equal(isTrivialPrompt('hi'), true); ok('英文问候判琐碎')
