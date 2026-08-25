@@ -76,11 +76,18 @@ const METADATA_CHANNEL = 'dsh'
  * 消息带 form:'notice'：客户端把它渲染为「上下文注入·记忆提醒」行，折叠状态下摘要
  * （source.summary）即直接可见——用户一眼能看到『必须先调 mem0_search』，展开可见全文。
  * （2026-08-23 实测：无 form 的 plugin 消息走 opaque 呈现，UI 折叠行无摘要、文本
- * 要点开才见，用户感知为「没有提醒」；notice 形态是该 UI 专为可读提醒设计的呈现。） */
+ * 要点开才见，用户感知为「没有提醒」；notice 形态是该 UI 专为可读提醒设计的呈现。）
+ * （2026-08-25 豁免双写：提醒文本自身也带 SOLE EXCEPTION——本提醒虽只在非琐碎轮
+ * 注入，但会留在会话历史里；后续琐碎轮回看历史时若只见无条件 "Do not skip"，
+ * 模型可能照样搜索并扩写查询。词表与 guards.js / usage 节 / 工具描述保持一致。） */
 const RECALL_REMINDER = (
   '[mem0 requirement] This step MUST call mem0_search before producing any final answer. ' +
   'Run one or several searches with different wording as needed, then answer using the ' +
   'recalled memories together with your own knowledge. Do not skip the search. ' +
+  'SOLE EXCEPTION: if THIS user message is itself only a bare acknowledgement, greeting or ' +
+  'continuation carrying no question or task of its own (好的、嗯、收到、明白了、继续、下一步、' +
+  '开始吧、ok、continue、thanks), skip mem0_search and answer directly — the mandate applies ' +
+  'again the moment real content appears (e.g. 继续帮我看看那个报错). ' +
   'CRITICAL LANGUAGE RULE: query language MUST match the user message language — ' +
   'if the user writes in Chinese, search in Chinese (e.g. Chinese keywords); ' +
   'NEVER translate Chinese to English; keep proper nouns verbatim. ' +
