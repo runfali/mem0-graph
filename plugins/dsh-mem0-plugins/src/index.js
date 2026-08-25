@@ -35,8 +35,8 @@ export const name = 'mem0'
 /** Settings 命名空间（浏览器卡片与 host 共用同一字符串）。 */
 export const MEM0_SETTINGS_NAMESPACE = settingsNamespace('mem0')
 
-/** 需要工具注册表与提示词注册表就绪再 apply。 */
-export const inject = ['tools', 'systemPrompt']
+/** 需要工具注册表与提示词注册表就绪再 apply；agents 保证补注册时 registry 可用。 */
+export const inject = ['tools', 'systemPrompt', 'agents']
 
 /** 设置命名空间的字段模式（也是 Settings 页面渲染/校验的依据）。 */
 export const Config = z.object({
@@ -200,16 +200,20 @@ export function apply(ctx, config = {}) {
   const clientFor = (s) =>
     new Mem0Client({ host: s.host, apiKey: s.apiKey, timeoutMs: s.requestTimeoutMs, breaker })
 
-  // 全局监听 agent/created（载荷带 agent，实测确认），在 agent 级 scoped ctx 上注册
-  // claimed/turn-stopping——这两个事件的运行时载荷仅有 {message,turn}/{turn,signal}，
-  // 没有 agent 字段（dsh-agent-loop emit 实现与 .d.ts 声明漂移），会话标识从闭包拿。
-  ctx.effect(() => ctx.on('agent/created', (payload) => {
-    const agent = payload && payload.agent
+  // 幂等保护：同一 agent 只挂一次 hook。agent/created 与 apply 期补注册（下述
+  // existingAgents）两条路径可能先后到达同一 agent（比如插件 apply 前 agent 已
+  // 创建、created 事件已错过，apply 时才补挂），重复注册会让 pre-step 双触发。
+  const hookedAgents = new WeakSet()
+
+  /** 给单个 agent 挂 mem0 hook（claimed 捕获 / pre-step 提醒注入 / turn-stopping 写入配对）。
+   * 不变量：Agent.id 就是 Session.id（dsh-agent runtime-types：single identity shared with session）。 */
+  const installAgentHooks = (agent) => {
     if (!agent || !agent.id || !agent.ctx) {
-      log.debug('agent/created without usable agent, skipping mem0 hooks')
+      log.debug('agent without usable ctx, skipping mem0 hooks')
       return
     }
-    // 不变量：Agent.id 就是 Session.id（dsh-agent runtime-types：single identity shared with session）
+    if (hookedAgents.has(agent)) return
+    hookedAgents.add(agent)
     const sessionId = agent.id
     agent.ctx.on('agent/inbox/claimed', (claimed) => {
       try {
@@ -280,6 +284,14 @@ export function apply(ctx, config = {}) {
         log.debug('enqueue failed: ' + String((error && error.message) || error))
       }
     })
+    log.debug('mem0 hooks installed for agent ' + sessionId)
+  }
+
+  // 全局监听 agent/created（载荷带 agent，实测确认），在 agent 级 scoped ctx 上注册
+  // claimed/turn-stopping——这两个事件的运行时载荷仅有 {message,turn}/{turn,signal}，
+  // 没有 agent 字段（dsh-agent-loop emit 实现与 .d.ts 声明漂移），会话标识从闭包拿。
+  ctx.effect(() => ctx.on('agent/created', (payload) => {
+    installAgentHooks(payload && payload.agent)
   }), 'mem0:agent-hooks')
   // ---------------------------------------------------------------------------
   // 自动写入：session/event 捕获配对 + turn-stopping 出队 + 潮浪并忆
@@ -616,4 +628,25 @@ export function apply(ctx, config = {}) {
       }
     }
   }))
+
+  // ---------------------------------------------------------------------------
+  // 补注册：插件 apply 时枚举已存在的 agents。
+  // dsh 重启后（或任何插件晚于 agent 创建的时序下），agent 的 `agent/created`
+  // 事件在插件 `ctx.on` 注册之前已经 emit 过，错过即永久错过——该 agent 上
+  // 永远不会挂上 pre-step 提醒（2026-08-25 实测：重启后最早创建的会话第一条
+  // 消息无【记忆提醒】，之后创建的会话正常）。host 的 agents registry 可枚举
+  // 现存 live agents，apply 尾声统一补挂；与 agent/created 路径共用
+  // installAgentHooks（WeakSet 幂等，重复到达不会双触发）。
+  const agentsRegistry = ctx.get && ctx.get('agents') ? ctx.get('agents') : ctx.agents
+  if (agentsRegistry && typeof agentsRegistry.list === 'function') {
+    try {
+      const existing = agentsRegistry.list()
+      if (existing && existing.length) {
+        for (const agent of existing) installAgentHooks(agent)
+        log.debug('backfilled mem0 hooks for ' + existing.length + ' pre-existing agent(s)')
+      }
+    } catch (error) {
+      log.debug('existing-agent backfill failed: ' + String((error && error.message) || error))
+    }
+  }
 }

@@ -123,8 +123,15 @@ function makeCtx(config) {
     },
     tools: { register: (def) => tools.push(def) },
     systemPrompt: { section: (def) => sections.push(def) },
+    get(key) {
+      // host 服务查找：只暴露 agents registry（补注册路径用）
+      if (key === 'agents') return ctx.agentsRegistry
+      return undefined
+    },
     // agent 级 scoped ctx 工厂：真实环境 agent.ctx.on 只收本 agent 事件
     agentCtxs: [],
+    agentsRegistry: { list: () => ctx.registryAgents || [] },
+    registryAgents: [],
     createAgent(id) {
       const actx = {
         id,
@@ -291,6 +298,26 @@ const emit = (event, ...args) => Promise.all((env.listeners.get(event) || []).ma
 const emitOn = (actx, event, ...args) => Promise.all((actx.listeners.get(event) || []).map((cb) => cb(...args)))
 const spawn = (id) => { const a = env.ctx.createAgent(id); return a }
 const spawnAll = async (ids) => { const list = []; for (const id of ids) { const a = spawn(id); await emit('agent/created', { agent: a }); list.push(a) } return list }
+
+// 补注册路径（2026-08-25 实测缺陷）：插件 apply 晚于 agent 创建时，agent/created
+// 已被错过；host 在 apply 尾声枚举现存 agents 统一补挂 hook（幂等，不双触发）。
+{
+  const preExisting = spawn('sess-PreExisting')
+  const hooksBefore = (preExisting.listeners.get('agent/pre-step') || []).length
+  assert.equal(hooksBefore, 0, 'apply 前预存在 agent 尚未挂 pre-step（还原缺陷现场）')
+  const env2 = makeCtx({})
+  env2.ctx.registryAgents.push(preExisting) // host registry 里已有该 agent
+  apply(env2.ctx, { host: 'http://mock:9999' })
+  const hooksAfter = (preExisting.listeners.get('agent/pre-step') || []).length
+  assert.ok(hooksAfter >= 1, 'apply 补注册后预存在 agent 挂上 pre-step 监听')
+  assert.ok((preExisting.listeners.get('agent/inbox/claimed') || []).length >= 1, '补注册同时挂 claimed')
+  assert.ok((preExisting.listeners.get('agent/turn-stopping') || []).length >= 1, '补注册同时挂 turn-stopping')
+  // 幂等：同一 agent 补注册 + agent/created 都到达时只挂一份
+  await Promise.all((env2.listeners.get('agent/created') || []).map((cb) => cb({ agent: preExisting })))
+  const hooksDup = (preExisting.listeners.get('agent/pre-step') || []).length
+  assert.equal(hooksDup, hooksAfter, '补注册与 created 重复到达不双触发')
+  ok('apply 尾声枚举现存 agents 补挂 hook（幂等）')
+}
 
 assert.equal(env.tools.length, 4); ok('注册四个工具（defineTool 真实编译通过）')
 assert.deepEqual(env.tools.map((t) => t.name), ['mem0_search', 'mem0_add', 'mem0_update', 'mem0_delete']); ok('工具名正确')
