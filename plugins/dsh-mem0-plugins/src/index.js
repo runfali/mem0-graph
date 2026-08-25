@@ -376,7 +376,8 @@ export function apply(ctx, config = {}) {
       lastUserBySession.clear()
       userByTurn.clear()
       lastAssistantByTurn.clear()
-      coalescer.flushAll('dispose')
+      // 返回冲刷 promise：cordis teardown 会 await，关停时 in-flight 写入不丢
+      return coalescer.flushAll('dispose')
     }
   }, 'mem0:coalesce-tick')
 
@@ -584,6 +585,7 @@ export function apply(ctx, config = {}) {
       const s = spec()
       try {
         ready(s)
+        if (breaker.open) return toolFail('Mem0 temporarily unavailable; will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
         const result = await clientFor(s).updateMemory(args.memory_id, args.text, exec.signal)
         if (s.feedbackEnabled) {
           void clientFor(s).reportFeedback(args.memory_id, 'correction', { source: 'auto', note: args.text }, log)
@@ -615,6 +617,7 @@ export function apply(ctx, config = {}) {
       const s = spec()
       try {
         ready(s)
+        if (breaker.open) return toolFail('Mem0 temporarily unavailable; will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
         const result = await clientFor(s).deleteMemory(args.memory_id, exec.signal)
         if (s.feedbackEnabled) {
           void clientFor(s).reportFeedback(args.memory_id, 'useless', { source: 'auto' }, log)
@@ -637,10 +640,11 @@ export function apply(ctx, config = {}) {
   // 消息无【记忆提醒】，之后创建的会话正常）。host 的 agents registry 可枚举
   // 现存 live agents，apply 尾声统一补挂；与 agent/created 路径共用
   // installAgentHooks（WeakSet 幂等，重复到达不会双触发）。
-  const agentsRegistry = ctx.get && ctx.get('agents') ? ctx.get('agents') : ctx.agents
-  if (agentsRegistry && typeof agentsRegistry.list === 'function') {
+  const agentsRegistry = ctx.get && typeof ctx.get === 'function' ? ctx.get('agents') : undefined
+  const agentsService = agentsRegistry || ctx.agents
+  if (agentsService && typeof agentsService.list === 'function') {
     try {
-      const existing = agentsRegistry.list()
+      const existing = agentsService.list()
       if (existing && existing.length) {
         for (const agent of existing) installAgentHooks(agent)
         log.debug('backfilled mem0 hooks for ' + existing.length + ' pre-existing agent(s)')

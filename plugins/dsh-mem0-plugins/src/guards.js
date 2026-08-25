@@ -29,11 +29,18 @@ const TRIVIAL_PROMPT_RE = new RegExp(
   'i'
 )
 
+/** 斜杠命令形态：单段、字母开头、≤24 字符（/compact /help /start 这类）。
+ * 不能用「以 / 开头」粗判——「/etc/hosts 里改了什么」「/api/v1 报错怎么办」
+ * 「/data/x 有什么文件」这类路径/端点查询恰是记忆检索最该介入的场景。 */
+const SLASH_COMMAND_RE = /^\/[a-zA-Z][\w-]{0,23}$/
+
 /** 是否属于不值得召回的琐碎输入（空/斜杠命令/纯问候确认）。 */
 export function isTrivialPrompt(text) {
   if (!text) return true
   const stripped = String(text).trim()
   if (!stripped) return true
-  if (stripped.startsWith('/')) return true
+  // 剥掉全部标点/符号后为空的串（......、！！！、。。。）无语义信号
+  if (!stripped.replace(/[\p{P}\p{S}\p{Z}\s]/gu, '')) return true
+  if (SLASH_COMMAND_RE.test(stripped)) return true
   return TRIVIAL_PROMPT_RE.test(stripped)
 }

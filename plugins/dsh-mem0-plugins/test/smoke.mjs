@@ -7,8 +7,8 @@
  * - mock 全局 fetch（按路由应答，统计调用）
  *
  * 验证：
- * 1. apply 全链路注册成功（四工具经真实 defineTool 编译、prompt 节、五类监听、tick）
- * 2. 自动召回链路：claimed 预取 → assemble 瀑布有界等待 → 注入 sections
+ * 1. apply 全链路注册成功（四工具经真实 defineTool 编译、prompt 节、事件监听、tick）
+ * 2. 补注册路径：apply 晚于 agent 创建时枚举现存 agents 补挂 hook（幂等）
  * 3. 自动写入链路：session/event 捕获 → turn-stopping 入队 → tick 冲刷 → POST /memories
  * 4. 工具执行路径：未配置报错 / 搜索成功形态
  * 5. 纯 JSON 剥除与熔断器单元行为
@@ -168,8 +168,6 @@ function resolveConfigManually(schema, entry) {
     agentId: 'dsh',
     topK: 10,
     rerank: false,
-    recallEnabled: true,
-    recallWaitMs: 0,
     distillEnabled: true,
     distillMinChars: 500,
     distillInputMaxChars: 8000,
@@ -265,14 +263,19 @@ console.log('== 单元：双飞慢路径 ==')
 
 console.log('== 单元：琐碎输入守卫 ==')
 {
-  for (const t of ['hi', 'ok!', 'thanks.', '/compact', '继续', '', '   ']) {
-    // 注意 hermes 词表是英文的；中文「继续」不在词表——如实断言行为
-  }
   assert.equal(isTrivialPrompt('hi'), true); ok('英文问候判琐碎')
   assert.equal(isTrivialPrompt('OK!!!'), true); ok('带标点确认判琐碎')
-  assert.equal(isTrivialPrompt('/compact'), true); ok('斜杠命令判琐碎')
+  assert.equal(isTrivialPrompt('/compact'), true); ok('斜杠命令判琐碎（单段短命令形态）')
   assert.equal(isTrivialPrompt('帮我看看这个报错'), false); ok('正常中文请求不误伤')
   assert.equal(isTrivialPrompt('continue'), true); ok('continue 判琐碎')
+  // 斜杠判定收紧（2026-08-25 审计 G1）：以 / 开头的真实内容查询不得误伤
+  assert.equal(isTrivialPrompt('/etc/hosts 里改了什么'), false); ok('路径查询不误伤：/etc/hosts…')
+  assert.equal(isTrivialPrompt('/api/v1 报错怎么办'), false); ok('端点查询不误伤：/api/v1…')
+  assert.equal(isTrivialPrompt('/data/x 有什么文件'), false); ok('目录查询不误伤：/data/x…')
+  assert.equal(isTrivialPrompt('/data/x'), false); ok('纯路径也不误伤（多段非命令）')
+  // 纯符号串（2026-08-25 审计 G2）：剥标点后为空无语义信号
+  assert.equal(isTrivialPrompt('。。。'), true); ok('纯中文句点判琐碎')
+  assert.equal(isTrivialPrompt('......'), true); ok('纯西文句点判琐碎')
   // 中文扩充词表
   assert.equal(isTrivialPrompt('好的'), true); ok('中文应答判琐碎：好的')
   assert.equal(isTrivialPrompt('嗯嗯'), true); ok('中文应答判琐碎：嗯嗯')
@@ -436,6 +439,50 @@ console.log('== 单元：有界队列丢最旧 ==')
   assert.equal(q.queue[0].sessionId, 's2'); ok('最旧的 s0/s1 被丢')
 }
 
+console.log('== 单元：冲刷失败不丢数据（C1 回归）==')
+{
+  // addFn 先失败两次再成功：桶必须放回重试，消息零丢失
+  let attempts = 0
+  const written = []
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async ({ messages }) => {
+      attempts += 1
+      if (attempts <= 2) throw new Error('circuit open (simulated)')
+      written.push(messages)
+    },
+    log: {}
+  })
+  q.enqueue({ userId: 'u', sessionId: 'sR', userContent: '不能丢的对话', assistantContent: '回答' })
+  q.drain()
+  // flushDue 对冲刷是 fire-and-forget 且按 idle/window 判到期：
+  // 用未来时钟强制到期 + 让出事件循环等 addFn settle
+  const settle = () => new Promise((r) => setTimeout(r, 10))
+  const tickAt = async (t) => { q.flushDue(t); await settle() }
+  await tickAt(Date.now() + 60000)
+  assert.equal(written.length, 0); ok('失败首次未写入（前置）')
+  assert.ok(q.buckets.size > 0 || q.pending > 0); ok('失败后桶已放回待重试')
+  await tickAt(Date.now() + 60000) // 第二次仍失败
+  await tickAt(Date.now() + 60000) // 第三次成功
+  assert.equal(written.length, 1); ok('重试后成功写入，消息零丢失')
+  const flushed = written[0]
+  assert.ok(JSON.stringify(flushed).includes('不能丢的对话')); ok('放回后内容完整不丢字')
+}
+
+console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
+{
+  const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 50, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async () => {}, log: {}
+  })
+  // 每条 1900 字符 < fastpathChars(2000) 入桶；旧笔误用当条值对比 maxChars(4000) 永不触发
+  for (let i = 0; i < 3; i += 1) {
+    q2.enqueue({ userId: 'u', sessionId: 'cap', userContent: 'x'.repeat(1900), assistantContent: '' })
+    q2.drain()
+  }
+  assert.equal(q2.buckets.size, 0, '累积 chars 达 maxChars 应立即冲刷清桶'); ok('桶累积达 maxChars 触发冲刷（3×1900≥4000 在第 3 条触发）')
+}
+
 console.log('== 中断轮不入记忆 ==')
 {
   const [agentI] = await spawnAll(['sess-I'])
@@ -464,31 +511,6 @@ console.log('== 并发轮 user 文本配对 ==')
   const joined = bodies.join('')
   assert.ok(joined.includes('第一轮的问题'), 'turn1 配对错位'); ok('turn1 配对到自己的 user 文本')
   assert.ok(joined.includes('第二轮的问题'), 'turn2 配对错位'); ok('turn2 配对到自己的 user 文本')
-}
-
-console.log('== 非阻塞协议：慢召回不阻塞装配 ==')
-{
-  // 人为制造慢 search（300ms 后才返回）
-  const origFetch = globalThis.fetch
-  globalThis.fetch = async (url, init = {}) => {
-    const path = new URL(url).pathname
-    if (path === '/search') {
-      await new Promise((r) => setTimeout(r, 300))
-      return origFetch(url, init)
-    }
-    return origFetch(url, init)
-  }
-  await spawnAll(['sess-NB'])
-  const agentNB = env.ctx.agentCtxs[env.ctx.agentCtxs.length - 1]
-  await emitOn(agentNB, 'agent/inbox/claimed', { message: { content: [{ type: 'text', text: '这里有记忆吗' }] }, turn: 1 })
-  const assemblyNB = { sections: [] }
-  const t0 = Date.now()
-  await emit('system-prompt/assemble', assemblyNB, { agent: { id: 'sess-NB' } }, async () => assemblyNB)
-  const elapsed = Date.now() - t0
-  assert.ok(elapsed < 80, '装配被慢召回阻塞了 ' + elapsed + 'ms'); ok('慢召回下装配立即放行（' + elapsed + 'ms）')
-  assert.equal(assemblyNB.sections.find((sec) => sec.name === 'mem0:recall'), undefined); ok('未完成召回不注入（放行后由 mem0_search 工具兜底）')
-  globalThis.fetch = origFetch
-  await new Promise((r) => setTimeout(r, 400)) // 等慢请求落定，避免悬挂影响后续用例
 }
 
 console.log('== 工具执行：search 成功形态 ==')

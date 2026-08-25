@@ -67,9 +67,15 @@ export class CircuitBreaker {
 export function retuneBreaker(breaker, threshold, cooldownMs) {
   breaker.threshold = threshold;
   breaker.cooldownMs = cooldownMs;
-  if (breaker.openUntil > 0 && breaker.consecutiveFailures >= breaker.threshold) {
+  // 计数已达新阈值：未打开则立即打开（调低阈值即时收紧，而不是等 get open
+  // 读时静默清零）；已打开时按新冷却重算窗口（只缩短不延长）
+  if (breaker.consecutiveFailures >= breaker.threshold) {
     const newUntil = Date.now() + breaker.cooldownMs;
-    if (newUntil < breaker.openUntil) breaker.openUntil = newUntil;
+    if (breaker.openUntil > 0) {
+      if (newUntil < breaker.openUntil) breaker.openUntil = newUntil;
+    } else {
+      breaker.openUntil = newUntil;
+    }
   }
 }
 
@@ -137,10 +143,20 @@ async function requestJson(method, url, headers, body, timeoutMs, signal) {
         (error instanceof Error && (error.name === 'FetchError' || /fetch failed|econnrefused|enotfound|socket/i.test(String(error.message))));
       const timedOut = error instanceof Error && /timed out/.test(String(error.message));
       const abortedByCaller = signal && signal.aborted && !timedOut && !(error instanceof Error && /mem0 request timed out/.test(String(error.message)));
-      if (abortedByCaller) throw error;
+      if (abortedByCaller) {
+        // 打标记供 #call 区分：调用方主动取消是用户行为，不得污染熔断计数
+        error.abortedByCaller = true;
+        throw error;
+      }
       if (!(networkLevel && attempt < attempts - 1)) {
         if (timedOut || networkLevel) {
-          throw new Error('mem0 server unreachable at ' + new URL(url).origin + ' (' + String(error.message || error) + ')');
+          let origin = url;
+          try {
+            origin = new URL(url).origin;
+          } catch {
+            // host 配置缺协议时 new URL 会二次抛错，保留原始网络错误即可
+          }
+          throw new Error('mem0 server unreachable at ' + origin + ' (' + String(error.message || error) + ')');
         }
         throw error;
       }
@@ -161,6 +177,10 @@ export class Mem0Client {
   constructor(options = {}) {
     const host = String(options.host || '').trim().replace(/\/+$/, '');
     if (!host) throw new Error('mem0 host is not configured');
+    // 缺协议的 host（如 "10.0.0.5:8888"）fetch 会抛难懂的 parse 错误，构造期给出可行动的提示
+    if (!/^https?:\/\//i.test(host)) {
+      throw new Error('mem0 host must start with http:// or https:// — got: ' + host);
+    }
     this.host = host;
     this.apiKey = String(options.apiKey || '').trim();
     this.timeoutMs = options.timeoutMs > 0 ? Math.trunc(options.timeoutMs) : 60000;
@@ -196,7 +216,10 @@ export class Mem0Client {
       this.breaker.recordSuccess();
       return result;
     } catch (error) {
-      if (!isClientError(error)) this.breaker.recordFailure(error);
+      // 调用方主动取消（signal.abort）是用户行为而非服务端故障：
+      // 计入熔断会让「连续取消几次慢请求」错误触发熔断、短路后续正常读写
+      const cancelled = (error && error.abortedByCaller === true) || (signal && signal.aborted);
+      if (!cancelled && !isClientError(error)) this.breaker.recordFailure(error);
       throw error;
     }
   }

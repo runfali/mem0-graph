@@ -125,7 +125,10 @@ export class TidalCoalescer {
     bucket.chars += chars;
     bucket.last = ts;
     const turns = bucket.messages.length / 2;
-    if (chars >= (config.maxChars > 0 ? config.maxChars : 4000) || turns >= (config.maxTurns > 0 ? config.maxTurns : 5)) {
+    // 字符上限按「桶累积值」判定：当条 chars 已被 fastpathChars(默认2000) 挡住，
+    // 用当条值对比 maxChars(默认4000) 永不触发，活跃会话的桶会无限膨胀
+    // （2026-08-25 审计 C2：原代码 `chars >= maxChars` 是笔误）。
+    if (bucket.chars >= (config.maxChars > 0 ? config.maxChars : 4000) || turns >= (config.maxTurns > 0 ? config.maxTurns : 5)) {
       void this.flushBucket(key, 'cap');
     }
   }
@@ -155,7 +158,9 @@ export class TidalCoalescer {
     this.stats.bucketTurns[sid] = (this.stats.bucketTurns[sid] || 0) + turns;
   }
 
-  /** 冲刷单个桶为一次批量写入。 */
+  /** 冲刷单个桶为一次批量写入。失败把消息放回桶内等下一 tick 重试
+   * （删桶发生在写入前，直接吞错会静默丢整批记忆；与熔断叠加时——打开期
+   * 所有冲刷被短路——必须能存活到冷却结束。retries 达上限才放弃并计数）。 */
   async flushBucket(key, trigger) {
     const bucket = this.buckets.get(key);
     if (!bucket || !bucket.messages || bucket.messages.length === 0) return;
@@ -180,9 +185,31 @@ export class TidalCoalescer {
           ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized + ')');
       }
     } catch (error) {
-      if (this.log.warn) {
-        this.log.warn('mem0 coalesced flush failed (session=' + (bucket.sessionId || '<empty>') +
-          ', turns=' + turns + ', trigger=' + (trigger || 'unknown') + '): ' + String((error && error.message) || error));
+      // 放回桶首并保留最早 created（window 语义不因重试漂移）；冲刷期间同 key
+      // 若已落了新消息则合并，避免覆盖。MAX_FLUSH_RETRIES 防永久性坏数据（如
+      // 服务端 400 拒绝整批）无限占用内存。
+      bucket.retries = (bucket.retries || 0) + 1;
+      const MAX_FLUSH_RETRIES = 20;
+      if (bucket.retries <= MAX_FLUSH_RETRIES) {
+        const existing = this.buckets.get(key);
+        if (existing && existing !== bucket) {
+          existing.messages = bucket.messages.concat(existing.messages);
+          existing.chars += bucket.chars;
+          existing.created = Math.min(existing.created, bucket.created);
+        } else {
+          this.buckets.set(key, bucket);
+        }
+        if (this.log.warn) {
+          this.log.warn('mem0 coalesced flush failed (session=' + (bucket.sessionId || '<empty>') +
+            ', turns=' + turns + ', trigger=' + (trigger || 'unknown') + '), will retry (' +
+            bucket.retries + '/' + MAX_FLUSH_RETRIES + '): ' + String((error && error.message) || error));
+        }
+      } else {
+        this.stats.dropped += turns;
+        if (this.log.warn) {
+          this.log.warn('mem0 coalesced flush dropped after ' + bucket.retries + ' retries (session=' +
+            (bucket.sessionId || '<empty>') + ', turns=' + turns + '): ' + String((error && error.message) || error));
+        }
       }
     } finally {
       this.flushing -= 1;
@@ -203,9 +230,12 @@ export class TidalCoalescer {
     }
   }
 
-  /** 兜底冲刷全部桶（dispose / 关停前），保证记忆不丢。 */
+  /** 兜底冲刷全部桶（dispose / 关停前），保证记忆不丢。
+   * @returns Promise<allSettled> 宿主 dispose 可 await，避免关停时 in-flight 丢失。 */
   flushAll(trigger) {
-    for (const key of [...this.buckets.keys()]) void this.flushBucket(key, trigger || 'final');
+    const jobs = [];
+    for (const key of [...this.buckets.keys()]) jobs.push(this.flushBucket(key, trigger || 'final'));
+    return Promise.allSettled(jobs);
   }
 
   /** 全部桶中最早的下一次到期时刻；无桶返回 null。 */

@@ -104,7 +104,7 @@ function makeScope(namespace) {
   const snapshotValue = {
     status: 'ready',
     writable: true,
-    value: { enabled: false, host: 'http://127.0.0.1:8888', apiKey: '', topK: 10, recallEnabled: true, syncEnabled: true, coalesceIdleMs: 5000, breakerCooldownMs: 120000 },
+    value: { enabled: false, host: 'http://127.0.0.1:8888', apiKey: '', topK: 10, syncEnabled: true, coalesceIdleMs: 5000, breakerCooldownMs: 120000 },
     base: {},
     user: { apiKey: 'sk-test' }
   }

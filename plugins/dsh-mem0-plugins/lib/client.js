@@ -25,18 +25,17 @@ window.__ModuleLoader__.load({
     }
 
     // ---- 字段规格 ----
-    // type: text | number | bool；number/bool 的 parse 把表单值规整为 schema 期望的 JSON 值
+    // type: text | number | bool；number/bool 的 parse 把表单值规整为 schema 期望的 JSON 值；
+    // secret: true 的文本字段以 password 输入框呈现（apiKey 类，防旁观与 shoulder-surfing）
     const FIELDS = [
       { key: "enabled", type: "bool" },
       { key: "host", type: "text" },
-      { key: "apiKey", type: "text" },
+      { key: "apiKey", type: "text", secret: true },
       { key: "userId", type: "text" },
       { key: "agentId", type: "text" },
       { key: "forceRecallStep", type: "bool" },
       { key: "topK", type: "number" },
       { key: "rerank", type: "bool" },
-      { key: "recallEnabled", type: "bool" },
-      { key: "recallWaitMs", type: "number" },
       { key: "distillEnabled", type: "bool" },
       { key: "distillMinChars", type: "number" },
       { key: "distillInputMaxChars", type: "number" },
@@ -292,10 +291,6 @@ window.__ModuleLoader__.load({
       "hint.topK": "每次召回返回的最大条数，1–50，默认 10",
       "field.rerank": "搜索重排（rerank）",
       "hint.rerank": "开启后以全深度模式请求重排；服务端需配置 reranker",
-      "field.recallEnabled": "自动召回注入",
-      "hint.recallEnabled": "每轮用户发言后台预取语义搜索，命中则注入系统提示",
-      "field.recallWaitMs": "召回等待时间（毫秒）",
-      "hint.recallWaitMs": "装配点等待预取结果的上限，默认 0=纯异步（消息立即落库显示、回复零延迟，召回靠 mem0_search 工具兜底）；调大则最多等待该毫秒后注入",
       "field.distillEnabled": "长文本查询蒸馏",
       "hint.distillEnabled": "超过阈值的用户消息先由小模型提炼成检索意图再搜索，防止长日志打爆服务端；失败自动回退原文",
       "field.distillMinChars": "蒸馏触发阈值（字符）",
@@ -387,7 +382,8 @@ window.__ModuleLoader__.load({
         jsx("input", {
           id: props.id,
           className: props.invalid ? "M0pl_input M0pl_inputInvalid" : "M0pl_input",
-          type: "text",
+          type: props.secret ? "password" : "text",
+          autoComplete: props.secret ? "off" : undefined,
           inputMode: props.numeric ? "numeric" : undefined,
           ...(props.invalid ? { "aria-invalid": true } : {}),
           value: props.text,
@@ -459,6 +455,7 @@ window.__ModuleLoader__.load({
                 labelKey: FIELD_LABELS[key],
                 hintKey: FIELD_HINTS[key],
                 numeric: spec.type === "number",
+                secret: spec.secret === true,
                 text: field.stagedText,
                 checked: field.stagedBool,
                 overridden: field.overridden,
