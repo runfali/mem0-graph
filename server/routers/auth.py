@@ -104,31 +104,34 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
     # → IntegrityError → 403。models.py 已等价声明该索引（测试环境同构）。
     import sqlalchemy as _sa
 
-    result = db.execute(
-        _sa.insert(User)
-        .from_select(
-            [
-                User.name,
-                User.email,
-                User.password_hash,
-                User.role,
-            ],
-            _sa.select(
-                _sa.literal(body.name),
-                _sa.literal(body.email),
-                _sa.literal(hash_password(body.password)),
-                _sa.literal("admin"),
-            ).where(_sa.not_(_sa.select(User.id).exists())),
-        )
-        .returning(User.id)
-    )
-    # 三轮审计：必须先消费 RETURNING 结果再 commit——sqlite 在未取回结果时
-    # commit 抛 "cannot commit transaction - SQL statements in progress"
-    row = result.fetchone()
-    if row is None:
-        db.rollback()
-        raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
+    # 五轮审计：IntegrityError 覆盖整个执行段——PG 下并发第二 admin 撞
+    # partial unique index 时冲突在 db.execute 语句执行期抛出（非 commit 期），
+    # except 只包 commit 会让 500 逃逸（sqlite 测试因写锁串行化走不到该路径）
     try:
+        result = db.execute(
+            _sa.insert(User)
+            .from_select(
+                [
+                    User.name,
+                    User.email,
+                    User.password_hash,
+                    User.role,
+                ],
+                _sa.select(
+                    _sa.literal(body.name),
+                    _sa.literal(body.email),
+                    _sa.literal(hash_password(body.password)),
+                    _sa.literal("admin"),
+                ).where(_sa.not_(_sa.select(User.id).exists())),
+            )
+            .returning(User.id)
+        )
+        # 三轮审计：必须先消费 RETURNING 结果再 commit——sqlite 在未取回结果时
+        # commit 抛 "cannot commit transaction - SQL statements in progress"
+        row = result.fetchone()
+        if row is None:
+            db.rollback()
+            raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -201,7 +204,12 @@ def revoke_refresh(request: Request, body: RefreshRequest, db: Session = Depends
     被泄露的 refresh token 30 天内仍可换新 access。吊销幂等：未知/已吊销/
     过期 jti 一律返回成功（登出不应因 token 已失效而报错）。
     """
-    payload = decode_token(body.refresh_token)
+    try:
+        payload = decode_token(body.refresh_token)
+    except HTTPException:
+        # 五轮审计：过期/签名无效 token 也是"吊销目标"——幂等成功
+        # （登出不应因 token 已失效而报错）
+        return {"ok": True}
     jti = payload.get("jti")
     if jti:
         try:

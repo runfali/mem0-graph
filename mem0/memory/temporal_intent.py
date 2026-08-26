@@ -33,7 +33,12 @@ _BEFORE_UNTIL_RE = re.compile(r"\b(before|until)\s+(today|yesterday|\d{4}-\d{2}-
 # 四轮审计：显式 ISO 起点 + 弱终点（"2024-05-01 到今天"）——弱词分支先命中
 # 会吞掉显式起点，此处先解析成 range
 _ISO_TO_WEAK_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2})\s*(?:到|至|until|to)\s*(今天|昨天|today|yesterday)", re.IGNORECASE
+    r"(\d{4}-\d{2}-\d{2})\s*(到|until|to|至今|至|之后|以来|以后|起)\s*(今天|昨天|today|yesterday|至今)?",
+    re.IGNORECASE,
+)
+# 五轮审计：弱起点 + 显式 ISO 终点（"今天到 2024-05-01"）
+_WEAK_TO_ISO_RE = re.compile(
+    r"(今天|昨天|today|yesterday)\s*(?:到|至|until|to)\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE
 )
 
 _UNIT_DAYS_CN = {"天": 1, "周": 7, "月": 30, "个月": 30}
@@ -175,11 +180,34 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
     if m:
         return {"type": "range", "start": _resolve(m.group(2), today, yesterday), "end": None, "strength": "strong"}
 
-    # 四轮审计：显式 ISO 起点 + 弱终点组合（如"2024-05-01 到今天"）
+    # 四轮审计：显式 ISO 起点 + 弱终点（如"2024-05-01 到今天"）
+    # 五轮审计扩展：'之后/以来/以后' → 单侧开区间；'至今' → 到今天；
+    # 双 ISO 显式区间（_RANGE_ISO_RE）上移至弱词之前——"2024-01-01 到
+    # 2024-02-01 今天"若弱词先命中会丢掉两个显式边界
+    m = _RANGE_ISO_RE.search(q)
+    if m:
+        return {"type": "range", "start": m.group(1), "end": m.group(2), "strength": "strong"}
+
     m = _ISO_TO_WEAK_RE.search(q)
     if m:
-        end = _fmt(today if m.group(2) in ("今天", "today") else yesterday)
-        return {"type": "range", "start": m.group(1), "end": end, "strength": "strong"}
+        start, connector, tail = m.group(1), (m.group(2) or "").lower(), (m.group(3) or "").lower()
+        if connector == "至今":
+            return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
+        if connector in ("之后", "以来", "以后", "起"):
+            # 单侧开区间；残留部分若含今天/昨天则收口（如"2024-05-01 之后到今天"）
+            rest = q[m.end():]
+            if "今天" in rest or "today" in rest.lower():
+                return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
+            if "昨天" in rest or "yesterday" in rest.lower():
+                return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}
+            return {"type": "range", "start": start, "end": None, "strength": "strong"}
+        end = _fmt(today if tail in ("今天", "today", "至今") else yesterday)
+        return {"type": "range", "start": start, "end": end, "strength": "strong"}
+
+    m = _WEAK_TO_ISO_RE.search(q)
+    if m:
+        start = _fmt(today if m.group(1).lower() in ("今天", "today") else yesterday)
+        return {"type": "range", "start": start, "end": m.group(2), "strength": "strong"}
 
     m = _BEFORE_UNTIL_RE.search(q)
     if m:
@@ -206,10 +234,6 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
                 ref = today - timedelta(days=7) if kind == "week" else today.replace(day=1) - timedelta(days=1)
             start, end = _week_range(ref) if kind == "week" else _month_range(ref)
             return {"type": "range", "start": _fmt(start), "end": _fmt(end), "strength": "weak"}
-
-    m = _RANGE_ISO_RE.search(q)
-    if m:
-        return {"type": "range", "start": m.group(1), "end": m.group(2), "strength": "strong"}
 
     m = _ISO_RE.search(q)
     if m:

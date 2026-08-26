@@ -19,8 +19,9 @@ class User(Base):
     __tablename__ = "users"
     # 四轮审计：等价声明迁移 004 的 partial unique index（role='admin' 单例约束）。
     # register 的 INSERT...SELECT WHERE NOT EXISTS 在 PG READ COMMITTED 下非真原子，
-    # 生产真正的并发兜底是这条索引（第二个 admin 插入被阻塞 → IntegrityError→403）；
-    # 在 models 声明让 sqlite create_all 测试环境与生产 schema 同构。
+    # 生产真正的并发兜底是这条索引（第二个 admin 插入被阻塞 → IntegrityError→403）。
+    # 注：postgresql_where 仅 PG 方言生效，sqlite create_all 会退化为 role 全列
+    # 唯一索引（当前仅 admin 角色写入，行为等价；多角色时不严格同构）。
     __table_args__ = (
         Index(
             "ix_users_only_one_admin",

@@ -416,3 +416,28 @@ async def test_async_standard_depth_time_intent_upgrades_to_full(monkeypatch):
     memory.vector_store.temporal_search.assert_called_once()
     assert result["trace"]["depth"] == "full"
     assert any(m.get("source") == "temporal" for m in result["results"])
+
+
+def test_iso_to_weak_range_extensions():
+    """五轮审计：ISO 起点 + 中文连接词/弱终点组合的 range 语义。"""
+    from mem0.memory.temporal_intent import detect_temporal_intent
+
+    # 到 + 今天（四轮基线）
+    r = detect_temporal_intent("2026-08-01 到今天")
+    assert r["type"] == "range" and r["start"] == "2026-08-01"
+    assert r["end"] is not None
+    # 之后 + 今天（残留收口）
+    r = detect_temporal_intent("2026-08-01 之后到今天")
+    assert r["type"] == "range" and r["start"] == "2026-08-01"
+    # 以来 → 单侧开区间
+    r = detect_temporal_intent("2026-08-01 以来")
+    assert r["type"] == "range" and r["start"] == "2026-08-01" and r["end"] is None
+    # 至今 → 到今天
+    r = detect_temporal_intent("2026-08-01 至今")
+    assert r["type"] == "range" and r["start"] == "2026-08-01" and r["end"] is not None
+    # 双 ISO + 尾随弱词 → 双 ISO 优先
+    r = detect_temporal_intent("2026-08-01 到 2026-08-10 今天")
+    assert r["type"] == "range" and r["start"] == "2026-08-01" and r["end"] == "2026-08-10"
+    # 反向：今天到 ISO
+    r = detect_temporal_intent("今天到 2026-08-01")
+    assert r["type"] == "range" and r["end"] == "2026-08-01"

@@ -136,13 +136,43 @@ def submit_feedback(
             with db.begin_nested():
                 db.add(salience)
                 db.flush()
+            # 本事务成功插入新行：初始 1.0 起票应用 delta（老逻辑语义）
+            old_score = 1.0
+            new_score = round(min(max(1.0 + DELTAS[body.feedback_type], MIN_SCORE), MAX_SCORE), 4)
+            salience.salience_score = new_score
+            salience.updated_at = now
         except IntegrityError:
+            # 五轮审计：并发首触落败——重读胜者行后必须基于**当前分**继续
+            # 累加（复用 else 分支的 UPDATE 原子路径），旧实现按 1.0 基准
+            # 覆盖会静默丢掉胜者已应用的 delta
             salience = db.get(EvolveSalience, body.memory_id)
-        # 新行同样应用 delta（初始 1.0 起票——老逻辑语义，保存后与 totals 一致）
-        old_score = 1.0
-        new_score = round(min(max(1.0 + DELTAS[body.feedback_type], MIN_SCORE), MAX_SCORE), 4)
-        salience.salience_score = new_score
-        salience.updated_at = now
+            if salience is None:  # 极端：行已被并发删除
+                db.rollback()
+                raise HTTPException(status_code=404, detail="Memory no longer tracked.")
+            if salience.user_id is None and owner:
+                salience.user_id = owner
+            old_score = salience.salience_score
+            delta = DELTAS[body.feedback_type]
+            new_score = db.execute(
+                update(EvolveSalience)
+                .where(EvolveSalience.memory_id == body.memory_id)
+                .values(
+                    salience_score=func.round(
+                        case(
+                            (EvolveSalience.salience_score + delta > MAX_SCORE, MAX_SCORE),
+                            (EvolveSalience.salience_score + delta < MIN_SCORE, MIN_SCORE),
+                            else_=EvolveSalience.salience_score + delta,
+                        ).cast(Numeric),
+                        4,
+                    ),
+                    updated_at=now,
+                )
+                .returning(EvolveSalience.salience_score)
+            ).scalar_one_or_none()
+            if new_score is None:
+                db.rollback()
+                raise HTTPException(status_code=404, detail="Memory no longer tracked.")
+            new_score = float(new_score)
     else:
         if salience.user_id is None and owner:
             # Backfill the owner cache on first touch of a legacy row.

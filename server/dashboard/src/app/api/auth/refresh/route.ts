@@ -91,13 +91,19 @@ export async function DELETE() {
     // 四轮审计：登出时吊销服务端 jti——此前仅删 cookie，被泄露的 refresh
     // token 30 天内仍可换新 access；吊销幂等（未知/已吊销都返回 ok）
     try {
-      await fetch(`${getServerApiUrl()}${AUTH_ENDPOINTS.REVOKE_REFRESH}`, {
+      // 五轮审计：吊销失败必须可观测（此前静默降级——后端 429/500 时 jti
+      // 残留 30 天可重放窗口无人知晓）；失败不阻塞登出（cookie 仍清除）
+      const revokeRes = await fetch(`${getServerApiUrl()}${AUTH_ENDPOINTS.REVOKE_REFRESH}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: refreshToken }),
+        signal: AbortSignal.timeout(5000),
       });
-    } catch {
-      // 吊销失败不阻塞登出（cookie 仍清除）
+      if (!revokeRes.ok) {
+        console.error(`[auth] revoke-refresh failed: HTTP ${revokeRes.status}`);
+      }
+    } catch (error) {
+      console.error("[auth] revoke-refresh error:", error);
     }
   }
   cookieStore.delete(COOKIE_NAME);

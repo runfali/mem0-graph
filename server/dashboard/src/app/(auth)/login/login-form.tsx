@@ -4,10 +4,20 @@ import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 
-// 四轮审计：next 开放重定向防护——仅允许站内路径（/ 开头且不含协议/主机）
+// 四轮审计：next 开放重定向防护——仅允许站内路径。
+// 五轮审计：字符串检查可被反斜杠绕过（'/\evil.com' 会被 WHATWG URL 解析成
+// 外部 origin）——用 URL 构造器做归属终验
 function safeNextTarget(raw: string | null): string {
-  if (raw && raw.startsWith("/") && !raw.includes("://") && !raw.startsWith("//")) {
-    return raw;
+  if (!raw || !raw.startsWith("/") || raw.includes("://") || raw.startsWith("//")) {
+    return "/dashboard";
+  }
+  try {
+    const resolved = new URL(raw, window.location.origin);
+    if (resolved.origin === window.location.origin) {
+      return raw;
+    }
+  } catch {
+    // 解析失败一律回落首页
   }
   return "/dashboard";
 }
