@@ -64,7 +64,21 @@ export async function PUT(request: NextRequest) {
     );
   }
 
-  cookieStore.set(COOKIE_NAME, body.refresh_token, COOKIE_OPTIONS);
+  // 种 cookie 前先向后端校验真伪：无校验的全局写入点是会话固定/污染面
+  // （同源脚本可把受害者 cookie 换成攻击者 token 或垃圾值）。后端为单次
+  // 轮换制：校验即消费旧 jti，必须以轮换后的新 refresh_token 落 cookie。
+  const verify = await fetch(`${getServerApiUrl()}${AUTH_ENDPOINTS.REFRESH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: body.refresh_token }),
+  });
+
+  if (!verify.ok) {
+    return NextResponse.json({ error: "Invalid refresh token" }, { status: 401 });
+  }
+
+  const data = await verify.json();
+  cookieStore.set(COOKIE_NAME, data.refresh_token, COOKIE_OPTIONS);
   return NextResponse.json({ ok: true });
 }
 
