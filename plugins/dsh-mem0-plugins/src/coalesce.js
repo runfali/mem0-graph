@@ -188,7 +188,14 @@ export class TidalCoalescer {
       // 放回桶首并保留最早 created（window 语义不因重试漂移）；冲刷期间同 key
       // 若已落了新消息则合并，避免覆盖。MAX_FLUSH_RETRIES 防永久性坏数据（如
       // 服务端 400 拒绝整批）无限占用内存。
-      bucket.retries = (bucket.retries || 0) + 1;
+      //
+      // 熔断短路（shortCircuited，backend #guard 抛出）是暂时性失败：冷却结束前
+      // 每次重试都必然短路，若照常消耗 retries，20 次 × tick(300ms) ≈ 6-11s 就会
+      // 把整桶静默丢弃——远早于默认冷却(120s)结束。故短路错误不计数、低噪挂回，
+      // 冷却结束后第一次真实重试自然成功；非短路失败仍按原上限防坏数据占内存。
+      const shortCircuited = !!(error && error.shortCircuited === true);
+      bucket.retries = bucket.retries || 0;
+      if (!shortCircuited) bucket.retries += 1;
       const MAX_FLUSH_RETRIES = 20;
       if (bucket.retries <= MAX_FLUSH_RETRIES) {
         const existing = this.buckets.get(key);
@@ -199,10 +206,14 @@ export class TidalCoalescer {
         } else {
           this.buckets.set(key, bucket);
         }
-        if (this.log.warn) {
+        if (this.log.warn && !shortCircuited) {
           this.log.warn('mem0 coalesced flush failed (session=' + (bucket.sessionId || '<empty>') +
             ', turns=' + turns + ', trigger=' + (trigger || 'unknown') + '), will retry (' +
             bucket.retries + '/' + MAX_FLUSH_RETRIES + '): ' + String((error && error.message) || error));
+        } else if (this.log.debug && shortCircuited) {
+          this.log.debug('mem0 coalesced flush short-circuited by open breaker (session=' +
+            (bucket.sessionId || '<empty>') + ', turns=' + turns + '), held for breaker cooldown: ' +
+            String((error && error.message) || error));
         }
       } else {
         this.stats.dropped += turns;

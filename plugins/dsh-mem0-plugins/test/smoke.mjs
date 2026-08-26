@@ -507,6 +507,37 @@ console.log('== 单元：冲刷失败不丢数据（C1 回归）==')
   assert.ok(JSON.stringify(flushed).includes('不能丢的对话')); ok('放回后内容完整不丢字')
 }
 
+console.log('== 单元：熔断短路期冲刷不消耗重试（冷却竞赛回归）==')
+{
+  // 熔断打开期 shortCircuited 错误持续 30 次（> 旧 20 次上限），随后恢复：
+  // 桶必须存活到「冷却结束」，零丢弃——旧实现 20 次 × tick(300ms) ≈ 6-11s 即丢整桶
+  let attempts = 0
+  const written = []
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async ({ messages }) => {
+      attempts += 1
+      if (attempts <= 30) {
+        const e = new Error('mem0 temporarily unavailable: circuit breaker open, retries in 120s')
+        e.shortCircuited = true
+        throw e
+      }
+      written.push(messages)
+    },
+    log: {}
+  })
+  q.enqueue({ userId: 'u', sessionId: 'sBreaker', userContent: '熔断期间不能丢的记忆', assistantContent: '回答' })
+  q.drain()
+  const settle = () => new Promise((r) => setTimeout(r, 5))
+  const tickAt = async (t) => { q.flushDue(t); await settle() }
+  for (let i = 0; i < 30; i++) await tickAt(Date.now() + 60000) // 短路 30 次，远超旧上限
+  assert.equal(written.length, 0)
+  assert.equal(q.stats.dropped, 0); ok('持续短路 30 次零丢弃（retries 未被消耗）')
+  await tickAt(Date.now() + 60000) // 「冷却结束」后第一次真实重试成功
+  assert.equal(written.length, 1); ok('恢复后首试即成功，整桶记忆完整存活')
+  assert.ok(JSON.stringify(written[0]).includes('熔断期间不能丢的记忆')); ok('存活桶内容完整不丢字')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
