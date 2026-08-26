@@ -41,12 +41,10 @@ export async function POST() {
   });
 
   if (!res.ok) {
-    // 二轮审计 fix-3：并发轮换保护——cookie 可能已被另一路成功刷新轮换
-    // 为新值，只删「仍等于本次消费的旧 token」的 cookie，避免抹掉刚轮换
-    // 成功的会话（落败的刷新不应导致无辜登出）。
-    if (cookieStore.get(COOKIE_NAME)?.value === refreshToken) {
-      cookieStore.delete(COOKIE_NAME);
-    }
+    // 三轮审计：失败分支不再主动删除 cookie——Next Route Handler 的 cookies()
+    // 读取的是请求进入时的快照，与本次消费的 token 恒同源，比较恒真；多标签页
+    // 并发刷新时落败方会抹掉另一标签页刚轮换成功的新 cookie。失效 token 残留
+    // 无害（下次 POST 自然 401 走登录流程），登出清理交给 DELETE 端点。
     return NextResponse.json({ error: "Refresh failed" }, { status: 401 });
   }
 
