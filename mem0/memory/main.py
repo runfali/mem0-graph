@@ -2195,7 +2195,19 @@ class Memory(MemoryBase):
 
         _min_ttl = int(os.environ.get("MEM0_SEARCH_CACHE_TTL", "0"))
         _std_ttl = int(os.environ.get("MEM0_SEARCH_STD_CACHE_TTL", "0"))
-        _cache_key = (query, json.dumps(effective_filters, sort_keys=True, default=str), trace)
+        # 缓存键必须覆盖所有影响结果的调用参数：缺 depth 时 minimal 缓存的
+        # 空结果会被 standard/full 同 query 请求命中，直接返回错误结果
+        _cache_key = (
+            query,
+            json.dumps(effective_filters, sort_keys=True, default=str),
+            trace,
+            depth,
+            top_k,
+            threshold,
+            rerank,
+            explain,
+            show_expired,
+        )
 
         if depth == "minimal":
             if _min_ttl > 0:
@@ -2844,6 +2856,9 @@ class Memory(MemoryBase):
 
         self._update_memory(memory_id, text, existing_embeddings, update_metadata)
         display_first_run_notice(self, "sync", "update")
+        # 与 add/delete/delete_all 一致：update 改动了记忆内容，
+        # 必须失效搜索深度缓存，否则 TTL 窗口内同 query 仍返回旧内容
+        self._search_depth_cache.clear()
         return {"message": "Memory updated successfully!"}
 
     def delete(self, memory_id):
@@ -4513,7 +4528,19 @@ class AsyncMemory(MemoryBase):
 
         _min_ttl = int(os.environ.get("MEM0_SEARCH_CACHE_TTL", "0"))
         _std_ttl = int(os.environ.get("MEM0_SEARCH_STD_CACHE_TTL", "0"))
-        _cache_key = (query, json.dumps(effective_filters, sort_keys=True, default=str), trace)
+        # 缓存键必须覆盖所有影响结果的调用参数：缺 depth 时 minimal 缓存的
+        # 空结果会被 standard/full 同 query 请求命中，直接返回错误结果
+        _cache_key = (
+            query,
+            json.dumps(effective_filters, sort_keys=True, default=str),
+            trace,
+            depth,
+            top_k,
+            threshold,
+            rerank,
+            explain,
+            show_expired,
+        )
 
         if depth == "minimal":
             if _min_ttl > 0:
@@ -5169,6 +5196,9 @@ class AsyncMemory(MemoryBase):
 
         await self._update_memory(memory_id, text, existing_embeddings, update_metadata)
         await display_first_run_notice_async(self, "async", "update")
+        # 与 add/delete/delete_all 一致：update 改动了记忆内容，
+        # 必须失效搜索深度缓存，否则 TTL 窗口内同 query 仍返回旧内容
+        self._search_depth_cache.clear()
         return {"message": "Memory updated successfully!"}
 
     async def delete(self, memory_id):
