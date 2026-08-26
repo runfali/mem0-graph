@@ -242,12 +242,16 @@ function MemoriesContent() {
   const [memSort, setMemSort] = useState<SortState<Memory> | null>(null);
   const sortedMemories = useMemo(() => {
     if (!memSort) return filteredMemories;
-    // 「创建时间」列展示的是 updated_at ?? created_at，排序键与其一致；
-    // 其余列直接取原值比较
+    // 「创建时间」列排序键与展示值一致（均 created_at）；
+    // 「修改时间」列排序键是 updated_at ?? created_at（与展示一致）。
+    // 二轮审计 fix-11：曾误用 updated_at??created_at 排「创建时间」，
+    // 被 UPDATE 过的记忆会按修改时间重排、与展示的创建日期矛盾。
     const valueOf = (row: Memory): string | number =>
       memSort.key === "created_at"
-        ? (row.updated_at ?? row.created_at ?? "")
-        : ((row[memSort.key] ?? "") as string | number);
+        ? (row.created_at ?? "")
+        : memSort.key === "updated_at"
+          ? (row.updated_at ?? row.created_at ?? "")
+          : ((row[memSort.key] ?? "") as string | number);
     const copy = [...filteredMemories];
     copy.sort((a, b) => {
       const va = valueOf(a);
@@ -262,9 +266,12 @@ function MemoriesContent() {
   }, [filteredMemories, memSort]);
 
   const totalPages = Math.ceil(sortedMemories.length / PAGE_SIZE);
+  // 二轮审计：删除末页数据/过滤条件变化后页码可能越界——clamp 到最后一页，
+  // 避免渲染出空白表格（batchDelete 后 setPage 已是 0 除外）
+  const clampedPage = Math.min(page, Math.max(0, totalPages - 1));
   const paginatedMemories = sortedMemories.slice(
-    page * PAGE_SIZE,
-    (page + 1) * PAGE_SIZE,
+    clampedPage * PAGE_SIZE,
+    (clampedPage + 1) * PAGE_SIZE,
   );
 
   const pageSelectedCount = paginatedMemories.filter((m) =>
@@ -641,15 +648,15 @@ function MemoriesContent() {
               {totalPages > 1 && (
                 <div className="flex items-center justify-between text-sm text-onSurface-default-tertiary">
                   <span>
-                    第 {page * PAGE_SIZE + 1}–
-                    {Math.min((page + 1) * PAGE_SIZE, sortedMemories.length)}{" "}
+                    第 {clampedPage * PAGE_SIZE + 1}–
+                    {Math.min((clampedPage + 1) * PAGE_SIZE, sortedMemories.length)}{" "}
                     条，共 {sortedMemories.length} 条
                   </span>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={page === 0}
+                      disabled={clampedPage === 0}
                       onClick={() => setPage((p) => p - 1)}
                     >
                       上一页
@@ -657,7 +664,7 @@ function MemoriesContent() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={page >= totalPages - 1}
+                      disabled={clampedPage >= totalPages - 1}
                       onClick={() => setPage((p) => p + 1)}
                     >
                       下一页

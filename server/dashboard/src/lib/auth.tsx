@@ -7,7 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { api, setAccessToken } from "@/utils/api";
+import { api, refreshAccessToken, setAccessToken } from "@/utils/api";
 import { AUTH_ENDPOINTS } from "@/utils/api-endpoints";
 
 export interface AuthUser {
@@ -51,14 +51,11 @@ async function clearRefreshToken() {
 }
 
 async function refreshSession(): Promise<boolean> {
-  const res = await fetch("/api/auth/refresh", {
-    method: "POST",
-    credentials: "include",
-  });
-  if (!res.ok) return false;
-  const data = await res.json();
-  setAccessToken(data.access_token);
-  return true;
+  // 二轮审计 fix-3：并入与 axios 拦截器相同的 single-flight 刷新通道——
+  // 冷启动时 AuthProvider 与页面请求若各自 POST /auth/refresh，后端 jti
+  // 单次有效，落败方会触发登出；共享同一 promise 后只有一路真正刷新。
+  const token = await refreshAccessToken();
+  return token !== null;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {

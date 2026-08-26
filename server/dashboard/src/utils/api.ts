@@ -27,7 +27,7 @@ const redirectToLogin = () => {
 // 并发方会把已正常续期的用户硬踢回登录页（spurious logout）。
 let refreshPromise: Promise<string | null> | null = null;
 
-const refreshAccessToken = (): Promise<string | null> => {
+export const refreshAccessToken = (): Promise<string | null> => {
   if (!refreshPromise) {
     refreshPromise = (async () => {
       try {

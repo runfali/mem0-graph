@@ -41,8 +41,12 @@ export async function POST() {
   });
 
   if (!res.ok) {
-    // Refresh token is invalid — clear cookie
-    cookieStore.delete(COOKIE_NAME);
+    // 二轮审计 fix-3：并发轮换保护——cookie 可能已被另一路成功刷新轮换
+    // 为新值，只删「仍等于本次消费的旧 token」的 cookie，避免抹掉刚轮换
+    // 成功的会话（落败的刷新不应导致无辜登出）。
+    if (cookieStore.get(COOKIE_NAME)?.value === refreshToken) {
+      cookieStore.delete(COOKIE_NAME);
+    }
     return NextResponse.json({ error: "Refresh failed" }, { status: 401 });
   }
 
