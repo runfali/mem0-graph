@@ -538,6 +538,68 @@ console.log('== 单元：熔断短路期冲刷不消耗重试（冷却竞赛回�
   assert.ok(JSON.stringify(written[0]).includes('熔断期间不能丢的记忆')); ok('存活桶内容完整不丢字')
 }
 
+console.log('== 单元：短路期入队不拦截 + fastpath 降级 + 半开重置（二轮审计回归）==')
+{
+  // A) 短路期 enqueue 照常进桶（不再 turn-stopping 拦截），恢复后一次冲刷成功
+  let attempts = 0
+  const written = []
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async ({ messages }) => {
+      attempts += 1
+      if (attempts <= 3) { const e = new Error('open'); e.shortCircuited = true; throw e }
+      written.push(messages)
+    },
+    log: {}
+  })
+  // 模拟短路期 2 轮对话入队（旧实现会在入队口被拦截丢弃）
+  q.enqueue({ userId: 'u', sessionId: 'sIn', userContent: '短路期间的对话一', assistantContent: '答' })
+  q.enqueue({ userId: 'u', sessionId: 'sIn', userContent: '短路期间的对话二', assistantContent: '答' })
+  q.drain()
+  const settle = () => new Promise((r) => setTimeout(r, 5))
+  for (let i = 0; i < 4; i++) { q.flushDue(Date.now() + 60000); await settle() }
+  assert.equal(written.length, 1); ok('短路期入队消息恢复后一次冲刷成功')
+  assert.ok(JSON.stringify(written[0]).includes('短路期间的对话一') && JSON.stringify(written[0]).includes('短路期间的对话二'))
+  ok('短路期两轮对话完整存活')
+
+  // B) fastpath 直写失败降级入桶：首次失败后恢复，消息通过桶路径写入
+  let fa = 0
+  const written2 = []
+  const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async ({ messages }) => {
+      fa += 1
+      if (fa === 1) throw new Error('network reset')
+      written2.push(JSON.stringify(messages))
+    },
+    log: {}
+  })
+  q2.enqueue({ userId: 'u', sessionId: 'sF', userContent: 'x'.repeat(2500) + '快路径长内容', assistantContent: '答' })
+  q2.drain()
+  await settle()
+  assert.equal(written2.length, 0); ok('fastpath 首次失败未直接丢')
+  await q2.flushDue(Date.now() + 60000); await settle()  // 降级后第二次成功
+  assert.equal(written2.length, 1); ok('降级入桶后重试成功')
+  assert.ok(written2[0].includes('快路径长内容')); ok('快路径长内容零丢失')
+
+  // C) 半开重置：真实失败间隔超过冷却→retries 重置，永不累计到 20 丢弃
+  let fc = 0
+  const q3 = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 30 }),
+    addFn: async () => { fc += 1; throw new Error('half-open fail') },
+    log: {}
+  })
+  q3.enqueue({ userId: 'u', sessionId: 'sH', userContent: '半开期不能丢', assistantContent: '答' })
+  q3.drain()
+  for (let i = 0; i < 25; i++) {
+    await q3.flushDue(Date.now() + 60005);          // 未来时钟强制到期
+    await new Promise((r) => setTimeout(r, 40))     // 间隔 > cooldownMs 模拟半开轮
+  }
+  assert.equal(q3.stats.dropped, 0); ok('半开 25 次零丢弃（跨冷却重置）')
+  const bucket = [...q3.buckets.values()][0]
+  assert.ok(bucket.retries <= 5, 'retries 未累计到上限: ' + bucket.retries); ok('跨冷却失败间隔重置计数')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({

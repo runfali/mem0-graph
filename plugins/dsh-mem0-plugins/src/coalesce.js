@@ -145,11 +145,37 @@ export class TidalCoalescer {
         this.#countTurns(item.sessionId, messages.length / 2);
       })
       .catch((error) => {
-        if (this.log.warn) this.log.warn('mem0 direct write failed: ' + String((error && error.message) || error));
+        // 快路径失败必须降级入桶（2026-08-26 二轮审计）：直写只有一次机会，
+        // 短路/网络失败即丢——而长消息（用户贴长文/代码）通常正是高价值内容。
+        // 降级后借桶路径语义：短路挂桶等冷却、非短路重试至上限。
+        if (this.log.warn) {
+          this.log.warn('mem0 direct write failed, demoting to bucket (reason=' + reason +
+            ', session=' + (item.sessionId || '<empty>') + '): ' + String((error && error.message) || error));
+        }
+        this.#demoteToBucket(item, messages, chars);
       })
       .finally(() => {
         this.flushing -= 1;
       });
+  }
+
+  /** 快路径失败降级：路由进同 key 桶，复用挂起/重试/短路语义。 */
+  #demoteToBucket(item, messages, chars) {
+    const key = this.#key(item.userId, item.sessionId);
+    const ts = now();
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      bucket = { created: ts, last: ts, chars: 0, messages: [], userId: item.userId, sessionId: item.sessionId };
+      this.buckets.set(key, bucket);
+    }
+    bucket.messages.push(...messages);
+    bucket.chars += chars;
+    bucket.last = ts;
+    const turns = bucket.messages.length / 2;
+    if (bucket.chars >= (this.resolveConfig().maxChars > 0 ? this.resolveConfig().maxChars : 4000)
+        || turns >= (this.resolveConfig().maxTurns > 0 ? this.resolveConfig().maxTurns : 5)) {
+      void this.flushBucket(key, 'cap-after-demote');
+    }
   }
 
   #countTurns(sessionId, turns) {
@@ -195,7 +221,15 @@ export class TidalCoalescer {
       // 冷却结束后第一次真实重试自然成功；非短路失败仍按原上限防坏数据占内存。
       const shortCircuited = !!(error && error.shortCircuited === true);
       bucket.retries = bucket.retries || 0;
-      if (!shortCircuited) bucket.retries += 1;
+      if (!shortCircuited) {
+        // 跨冷却的新故障段重置计数（2026-08-26 二轮审计）：半开窗口的真实
+        // 失败间隔≈冷却时长，若不重置，20 次半开失败≈40 分钟持续故障后整桶
+        // 仍会被丢弃。同段连续故障（间隔<冷却）依旧累计，保留防坏数据占内存。
+        const cooldownMs = this.resolveConfig().cooldownMs > 0 ? this.resolveConfig().cooldownMs : 120000;
+        const sinceLast = bucket.lastFailAt ? Date.now() - bucket.lastFailAt : cooldownMs + 1;
+        bucket.retries = sinceLast > cooldownMs ? 1 : bucket.retries + 1;
+        bucket.lastFailAt = Date.now();
+      }
       const MAX_FLUSH_RETRIES = 20;
       if (bucket.retries <= MAX_FLUSH_RETRIES) {
         const existing = this.buckets.get(key);

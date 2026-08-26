@@ -287,7 +287,10 @@ export function apply(ctx, config = {}) {
           return
         }
         if (!userText && !assistantText) return
-        if (breaker.open) return
+        // （2026-08-26 二轮审计）：短路期不再拦截不入队——入队口拦截会让
+        // 熔断窗口内的整轮对话永久丢失（捕获缓存已提前 delete 无恢复路径）；
+        // coalescer 桶路径已保证短路冲刷不丢（shortCircuited 不消耗 retries），
+        // 队列有界（queueMaxLen）不会因短路堆积，统一交给 coalescer 挂桶等冷却。
         coalescer.enqueue({ userId: s.userId, sessionId, userContent: userText, assistantContent: assistantText })
       } catch (error) {
         log.debug('enqueue failed: ' + String((error && error.message) || error))
@@ -315,7 +318,10 @@ export function apply(ctx, config = {}) {
         maxTurns: s.coalesceMaxTurns,
         maxChars: s.coalesceMaxChars,
         fastpathChars: s.fastpathChars,
-        queueMaxLen: s.queueMaxLen
+        queueMaxLen: s.queueMaxLen,
+        // 供 coalescer 区分「同段连续故障」与「跨冷却的新故障段」：
+        // 半开窗口的真实失败间隔≈冷却时长，超过即重置重试计数
+        cooldownMs: s.breakerCooldownMs
       }
     },
     queueMaxLen: 50,
