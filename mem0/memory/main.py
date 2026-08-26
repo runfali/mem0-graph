@@ -1673,26 +1673,24 @@ class Memory(MemoryBase):
                 except Exception as e:
                     logger.warning(f"Failed to delete memory {did}: {e}")
         if update_records:
-            # Delete old vectors first, then re-insert new ones
-            for uid in (r[0] for r in update_records):
-                try:
-                    self.vector_store.delete(vector_id=uid)
-                except Exception as e:
-                    logger.warning(f"Failed to delete old memory for update {uid}: {e}")
+            # 同 id 替换：pgvector.insert 是 ON CONFLICT (id) DO UPDATE 全量 upsert
+            # （vector+payload 均覆盖），无需先删后插。旧「先删全部再插」存在丢失窗口：
+            # insert 失败时旧向量已删、记忆永久丢失且仍写虚假 UPDATE 历史。现改为
+            # 直接 upsert——insert 失败时旧记忆原样保留（仅告警），历史仅在成功后写。
             try:
                 self.vector_store.insert(
                     vectors=[r[2] for r in update_records],
                     ids=[r[0] for r in update_records],
                     payloads=[r[3] for r in update_records],
                 )
+                # Log update history（仅成功后写，保证历史与实际数据一致）
+                for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
+                    try:
+                        self.db.add_history(upd_id, None, upd_text, "UPDATE", created_at=datetime.now(timezone.utc).isoformat())
+                    except Exception as e:
+                        logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to insert updated memories: {e}")
-            # Log update history
-            for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
-                try:
-                    self.db.add_history(upd_id, None, upd_text, "UPDATE", created_at=datetime.now(timezone.utc).isoformat())
-                except Exception as e:
-                    logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
 
         if not records:
             self.db.save_messages(messages, session_scope)
@@ -3991,11 +3989,8 @@ class AsyncMemory(MemoryBase):
                 except Exception as e:
                     logger.warning(f"Failed to delete memory (async) {did}: {e}")
         if update_records:
-            for uid in (r[0] for r in update_records):
-                try:
-                    await asyncio.to_thread(self.vector_store.delete, vector_id=uid)
-                except Exception as e:
-                    logger.warning(f"Failed to delete old memory for update (async) {uid}: {e}")
+            # 同 id 替换直接 upsert（见 sync 版注释）：pgvector ON CONFLICT DO UPDATE
+            # 全量覆盖，先删后插的丢失窗口在此一并消除；历史仅在写入成功后记录。
             try:
                 await asyncio.to_thread(
                     self.vector_store.insert,
@@ -4003,13 +3998,13 @@ class AsyncMemory(MemoryBase):
                     ids=[r[0] for r in update_records],
                     payloads=[r[3] for r in update_records],
                 )
+                for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
+                    try:
+                        await asyncio.to_thread(self.db.add_history, upd_id, None, upd_text, "UPDATE")
+                    except Exception as e:
+                        logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to insert updated memories (async): {e}")
-            for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
-                try:
-                    await asyncio.to_thread(self.db.add_history, upd_id, None, upd_text, "UPDATE")
-                except Exception as e:
-                    logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
 
         if not records:
             await asyncio.to_thread(self.db.save_messages, messages, session_scope)

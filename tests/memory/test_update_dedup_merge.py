@@ -111,7 +111,8 @@ class TestSyncUpdateDedup:
         assert memory.vector_store.insert.call_count == 1
         payload = _assert_single_update(memory.vector_store.insert.call_args.kwargs)
         assert payload["data"] == _MERGED_TEXT
-        memory.vector_store.delete.assert_called_once_with(vector_id="uuid-1")
+        # UPDATE 走同 id upsert（零 delete）；去重后仍只写一条记录
+        assert memory.vector_store.delete.call_count == 0
         # exactly one merge LLM call, not one per UPDATE event
         assert memory.llm.generate_response.call_count == 2
         merge_call = memory.llm.generate_response.call_args_list[1]
@@ -187,7 +188,8 @@ class TestAsyncUpdateDedup:
         assert memory.vector_store.insert.call_count == 1
         payload = _assert_single_update(memory.vector_store.insert.call_args.kwargs)
         assert payload["data"] == _MERGED_TEXT
-        memory.vector_store.delete.assert_called_once_with(vector_id="uuid-1")
+        # async UPDATE 同样走 upsert（零 delete）
+        assert memory.vector_store.delete.call_count == 0
         assert memory.llm.generate_response.call_count == 2
         merge_call = memory.llm.generate_response.call_args_list[1]
         content = merge_call.kwargs["messages"][1]["content"]

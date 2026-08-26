@@ -1142,13 +1142,51 @@ class TestSemanticMergeUpdate:
             messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
         )
 
-        assert memory.vector_store.delete.call_args_list[0].kwargs["vector_id"] == "uuid-1"
+        # 同 id 替换走 pgvector upsert（ON CONFLICT DO UPDATE）：不再先删后插，
+        # 旧「先删全部再插」在 insert 失败时存在记忆永久丢失窗口
+        assert memory.vector_store.delete.call_count == 0
         payload = self._stored_payload(memory)
         assert payload["data"] == merged
         assert memory.vector_store.insert.call_args.kwargs["ids"][0] == "uuid-1"
         merge_messages = memory.llm.generate_response.call_args_list[1].kwargs["messages"]
         assert "192.0.2.163" in merge_messages[1]["content"]
         assert "后端使用 pgvector" in merge_messages[1]["content"]
+        assert result == []
+
+    @staticmethod
+    def _update_history_calls(memory):
+        return [c for c in memory.db.add_history.call_args_list if len(c.args) > 3 and c.args[3] == "UPDATE"]
+
+    def test_sync_update_upsert_writes_history_only_after_success(self, mocker):
+        """UPDATE 事件：同 id upsert 成功后才写 UPDATE 历史，且全程零 delete。"""
+        memory = self._memory_with_existing(mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"})
+        memory.db.add_history = Mock()
+        merged = "服务部署在 192.0.2.163，API 端口 8888，后端使用 pgvector"
+        memory.llm.generate_response.side_effect = [self._update_extraction(), merged]
+
+        memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
+        )
+
+        assert memory.vector_store.delete.call_count == 0
+        history = self._update_history_calls(memory)
+        assert len(history) == 1 and history[0].args[0] == "uuid-1"
+        assert history[0].args[2] == merged
+
+    def test_sync_update_insert_failure_keeps_old_memory_and_skips_history(self, mocker):
+        """insert 失败：无任何删除发生（旧记忆原样保留）、不写虚假 UPDATE 历史。"""
+        memory = self._memory_with_existing(mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"})
+        memory.db.add_history = Mock()
+        merged = "服务部署在 192.0.2.163，API 端口 8888，后端使用 pgvector"
+        memory.llm.generate_response.side_effect = [self._update_extraction(), merged]
+        memory.vector_store.insert.side_effect = RuntimeError("pg down")
+
+        result = memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
+        )
+
+        assert memory.vector_store.delete.call_count == 0
+        assert self._update_history_calls(memory) == []
         assert result == []
 
     def test_sync_update_contradiction_new_value_wins(self, mocker):
@@ -1202,7 +1240,8 @@ class TestSemanticMergeUpdate:
             messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
         )
 
-        assert memory.vector_store.delete.call_args_list[0].kwargs["vector_id"] == "uuid-1"
+        # async 同 id 替换同样直接 upsert，零 delete（见 sync 版注释）
+        assert memory.vector_store.delete.call_count == 0
         payload = self._stored_payload(memory)
         assert payload["data"] == merged
         assert memory.vector_store.insert.call_args.kwargs["ids"][0] == "uuid-1"
