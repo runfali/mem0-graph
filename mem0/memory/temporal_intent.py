@@ -32,8 +32,10 @@ _SINCE_AFTER_RE = re.compile(r"\b(since|after)\s+(today|yesterday|\d{4}-\d{2}-\d
 _BEFORE_UNTIL_RE = re.compile(r"\b(before|until)\s+(today|yesterday|\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
 # 四轮审计：显式 ISO 起点 + 弱终点（"2024-05-01 到今天"）——弱词分支先命中
 # 会吞掉显式起点，此处先解析成 range
+# 七轮审计：until 一并移除（'ISO until ISO' 显式区间必须落入 _RANGE_ISO_RE
+# 或 _BEFORE_UNTIL_RE 的截止语义，不得被本正则降级为单点）
 _ISO_TO_WEAK_RE = re.compile(
-    r"(\d{4}-\d{2}-\d{2})\s*(到|until|to|至今|至|之后|以来|以后|起)\s*(今天|昨天|today|yesterday|至今)?",
+    r"(\d{4}-\d{2}-\d{2})\s*(到|to|至今|至|之后|以来|以后|起)\s*(今天|昨天|today|yesterday|至今)?",
     re.IGNORECASE,
 )
 # 五轮审计：弱起点 + 显式 ISO 终点（"今天到 2024-05-01"）
@@ -84,6 +86,12 @@ def _resolve(token: str, today: date, yesterday: date) -> str:
     return token
 
 
+def _rest_implies_today(rest: str) -> bool:
+    """七轮审计：rest 文本是否暗示"到现在/今天"——'今' 单字过宽会误伤
+    今年/今后/今生，用负面前瞻只认 今日/今晨/今早/今晚/今夜/今儿 等。"""
+    return bool(re.search(r"现在|今(?!年|生|世|后)", rest, re.IGNORECASE))
+
+
 def intent_to_range(intent: Optional[dict], today: Optional[date] = None) -> Tuple[Optional[str], Optional[str]]:
     """Normalize a temporal intent to an absolute ["YYYY-MM-DD"|None, ...] range.
 
@@ -101,7 +109,13 @@ def intent_to_range(intent: Optional[dict], today: Optional[date] = None) -> Tup
         d = intent.get("date")
         return d, d
     if kind == "range":
-        return intent.get("start"), intent.get("end")
+        start, end = intent.get("start"), intent.get("end")
+        # 七轮审计：反向区间（start>end，如"2026-08-01 到 2024-01-01"）原样
+        # 透传会让 temporal_search 的上下界条件互斥、静默空结果——此处交换
+        # 并按用户意图保留（宁可全收也不漏）
+        if start and end and start > end:
+            start, end = end, start
+        return start, end
     return None, None
 
 
@@ -200,9 +214,9 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
             # 六轮审计：先读已捕获的 tail——'X 起至今' 直接收口到今天
             if tail == "至今":
                 return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
-            # 单侧开区间；残留部分若含今天/昨天则收口（如"2024-05-01 之后到今天"）
+            # 单侧开区间；残留部分若含今天/现在/昨天则收口（如"2024-05-01 之后到今天"）
             rest = q[m.end():]
-            if "今天" in rest or "today" in rest.lower():
+            if "今天" in rest or _rest_implies_today(rest):
                 return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
             if "昨天" in rest or "yesterday" in rest.lower():
                 return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}
@@ -214,7 +228,7 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
         # 六轮审计：tail 为空（连接词后非弱词尾部，如"到货/到岗/到现在/到月底"）——
         # 旧实现凭空造 end=昨天 是假阳性；"到现在/今" 收今天，其余回落单日期
         rest = q[m.end():]
-        if any(w in rest for w in ("现在", "今")):
+        if _rest_implies_today(rest):
             return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
         if "昨天" in rest or "yesterday" in rest.lower():
             return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}

@@ -464,3 +464,27 @@ def test_iso_connector_false_positives_and_edge_phrases():
     # 英文 until = 截止语义：不得伪造弱起点
     r = detect_temporal_intent("今天 until 2026-08-01")
     assert r["type"] == "range" and r["start"] is None and r["end"] == "2026-08-01", r
+
+
+def test_seventh_round_temporal_regressions():
+    """七轮审计：'今' 单字误伤、开区间'现在'收口、until 显式区间、反向交换。"""
+    from mem0.memory.temporal_intent import detect_temporal_intent, intent_to_range
+
+    # '今年/今年底/今后' 不得误收今天
+    for q in ("2026-08-01 到今年", "2026-08-01 到今年底", "2025-03-01 到今后"):
+        r = detect_temporal_intent(q)
+        assert r["type"] == "date", (q, r)
+
+    # 今日/现在 收今天
+    assert detect_temporal_intent("2025-01-01 到今日")["type"] == "range"
+    assert detect_temporal_intent("2024-05-01 之后到现在")["end"] is not None
+
+    # until 显式区间：截止语义（start=None、end=ISO）
+    r = detect_temporal_intent("2024-05-01 until 2026-08-01")
+    assert r["type"] == "range" and r["start"] is None and r["end"] == "2026-08-01", r
+
+    # 反向区间交换（消费端）：start>end 时交换避免矛盾 SQL
+    start, end = intent_to_range(
+        {"type": "range", "start": "2026-08-01", "end": "2024-01-01"}, None
+    )
+    assert start == "2024-01-01" and end == "2026-08-01"

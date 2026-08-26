@@ -408,7 +408,12 @@ def test_feedback_concurrent_first_touch_no_delta_loss(file_client):
 
     assert set(results.values()) == {200}, results
     # 最终分数 = 1.0 - 0.15 - 0.05 = 0.80（两 delta 都应用；useful 会被 clamp 到
-    # 1.0 干扰判定故不用）——若落败分支按 1.0 基准覆盖，结果会是 0.95 或 0.85
+    # 1.0 干扰判定故不用）。
+    # 七轮审计说明：sqlite 单写者锁下败者线程被挡在 feedback INSERT、重读必见
+    # 胜者已提交行 → 本用例实际钉住的是 else 分支（已存在行原子 UPDATE）的并发
+    # 正确性；SAVEPOINT 落败分支（IntegrityError catch）仅在 PG 多写者竞态下
+    # 可达，已由探针验证生产行为正确——"若落败分支按 1.0 基准覆盖结果会是
+    # 0.95/0.85"的断言仅对 PG 成立，sqlite 环境不触发该分支
     with file_client[1]() as db:
         row = db.get(EvolveSalience, "ftc-1")
         assert row is not None
