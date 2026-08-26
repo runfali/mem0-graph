@@ -117,7 +117,13 @@ def _resolve_user_from_jwt(token: str, db: Session) -> User:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise HTTPException(status_code=401, detail="Invalid token type.")
-    user = db.get(User, payload.get("sub"))
+    try:
+        # sub 必须是合法 UUID（User.id 为 UUID 列）：畸形值直接 401，
+        # 避免绑定 uuid 列时 DataError 冒泡成 500（模式同 consume_refresh_jti）
+        user_id = uuid.UUID(str(payload.get("sub")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token subject.")
+    user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found.")
     return user

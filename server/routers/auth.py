@@ -152,7 +152,13 @@ def refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db
     if not jti:
         raise HTTPException(status_code=401, detail="Refresh token is no longer valid.")
 
-    user = db.get(User, payload["sub"])
+    try:
+        # sub 缺失/畸形直接 401：payload["sub"] 的 KeyError 与非法 UUID 的
+        # DataError 都不应冒泡成 500（模式同 auth.consume_refresh_jti）
+        user_id = uuid.UUID(str(payload.get("sub")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Refresh token is no longer valid.")
+    user = db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found.")
 

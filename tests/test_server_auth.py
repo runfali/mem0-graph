@@ -520,3 +520,51 @@ class TestStartupLogging:
         with caplog.at_level(logging.WARNING):
             _load_app({"ADMIN_API_KEY": "short"})
         assert any("shorter than" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Malformed JWT subject (2026-08-26 audit fix regression)
+# ---------------------------------------------------------------------------
+
+class TestJwtMalformedSubject:
+    """畸形 JWT sub 必须 401，而非 DataError/KeyError 冒泡成 500。
+
+    修复：_resolve_user_from_jwt 与 /auth/refresh 在查库前先做 uuid 格式校验。
+    sqlite 下非法 UUID 走「not found」分支、PG 下走捕获 DataError 分支——
+    两条路径对外契约一致：401。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _mock_memory):
+        self.app = _load_app({"ADMIN_API_KEY": "", "AUTH_DISABLED": ""})
+        self.client = TestClient(self.app)
+
+    @staticmethod
+    def _token(claims: dict) -> str:
+        import time as _time
+
+        from jose import jwt as _jose_jwt
+
+        payload = {**claims, "exp": int(_time.time()) + 600}
+        return _jose_jwt.encode(payload, "test-jwt-secret-not-for-production", algorithm="HS256")
+
+    def test_access_token_with_non_uuid_sub_is_401(self):
+        token = self._token({"sub": "not-a-uuid", "type": "access"})
+        resp = self.client.get("/memories/mem-1", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401
+
+    def test_access_token_with_missing_sub_is_401(self):
+        token = self._token({"type": "access"})
+        resp = self.client.get("/memories/mem-1", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 401
+
+    def test_refresh_token_with_non_uuid_sub_is_401(self):
+        token = self._token({"sub": "garbage-sub", "type": "refresh", "jti": "some-jti"})
+        resp = self.client.post("/auth/refresh", json={"refresh_token": token})
+        assert resp.status_code == 401
+
+    def test_refresh_token_with_missing_sub_is_401(self):
+        # 修复前 payload["sub"] 缺失时抛 KeyError → 500
+        token = self._token({"type": "refresh", "jti": "some-jti"})
+        resp = self.client.post("/auth/refresh", json={"refresh_token": token})
+        assert resp.status_code == 401
