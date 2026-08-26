@@ -1176,6 +1176,7 @@ class TestSemanticMergeUpdate:
         stored = self._stored_payload(memory)
         assert stored["created_at"] == orig_created, "创建时间必须保留原值"
         assert stored["updated_at"] != "2026-08-20T01:00:00.000000+00:00", "更新时间必须刷新"
+        assert stored["text_lemmatized"] is not None, "语义合并后必须刷新分词（fix-12）"
 
     def test_sync_update_upsert_writes_history_only_after_success(self, mocker):
         """UPDATE 事件：同 id upsert 成功后才写 UPDATE 历史，且全程零 delete。"""
@@ -1269,6 +1270,48 @@ class TestSemanticMergeUpdate:
         assert "192.0.2.163" in merge_messages[1]["content"]
         assert "后端使用 pgvector" in merge_messages[1]["content"]
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_async_update_insert_failure_keeps_old_memory_and_skips_history(self, mocker):
+        """async 镜像：insert 失败零删除、不写虚假 UPDATE 历史（fix-1 双实现对称）。"""
+        memory = self._memory_with_existing(
+            mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"}, AsyncMemory
+        )
+        memory.db.add_history = Mock()
+        merged = "服务部署在 192.0.2.163，API 端口 8888，后端使用 pgvector"
+        memory.llm.generate_response.side_effect = [self._update_extraction(), merged]
+        memory.vector_store.insert.side_effect = RuntimeError("pg down")
+
+        result = await memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
+        )
+
+        assert memory.vector_store.delete.call_count == 0
+        assert self._update_history_calls(memory) == []
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_async_update_preserves_created_at_refreshes_updated_at(self, mocker):
+        """async 镜像：created_at 保留原值、updated_at 刷新（fix-12 双实现对称）。"""
+        memory = self._memory_with_existing(
+            mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"}, AsyncMemory
+        )
+        memory.db.add_history = Mock()
+        merged = "服务部署在 192.0.2.163，API 端口 8888，后端使用 pgvector"
+        orig_created = "2026-08-14T01:00:00.000000+00:00"
+        payload = memory.vector_store.search.return_value[0].payload
+        payload["created_at"] = orig_created
+        payload["updated_at"] = "2026-08-20T01:00:00.000000+00:00"
+        memory.llm.generate_response.side_effect = [self._update_extraction(), merged]
+
+        await memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "test"}], metadata={}, effective_filters={}, infer=True
+        )
+
+        stored = self._stored_payload(memory)
+        assert stored["created_at"] == orig_created
+        assert stored["updated_at"] != "2026-08-20T01:00:00.000000+00:00"
+        assert stored["text_lemmatized"] is not None, "语义合并后必须刷新分词（fix-12）"
 
     @pytest.mark.asyncio
     async def test_async_update_merge_exception_falls_back(self, mocker, caplog):

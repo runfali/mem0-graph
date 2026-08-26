@@ -702,7 +702,8 @@ class PGVector(VectorStoreBase):
     def list(
         self,
         filters: Optional[dict] = None,
-        top_k: Optional[int] = 100
+        top_k: Optional[int] = 100,
+        order_by: Optional[str] = None,
     ) -> List[OutputData]:
         """
         List all vectors in a collection.
@@ -710,6 +711,9 @@ class PGVector(VectorStoreBase):
         Args:
             filters (Dict, optional): Filters to apply to the list.
             top_k (int, optional): Number of vectors to return. Defaults to 100.
+            order_by (str, optional): Named sort mode, one of:
+                "updated_at_desc" — ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST.
+                None — no ORDER BY (physical scan order, historical default).
 
         Returns:
             List[OutputData]: List of vectors.
@@ -717,6 +721,12 @@ class PGVector(VectorStoreBase):
         self._ensure_collection()
         filter_conditions, filter_params = _build_filter_conditions(filters)
         filter_clause = sql.SQL("WHERE " + " AND ".join(filter_conditions)) if filter_conditions else sql.SQL("")
+        # 排序白名单：只允许内部命名的排序模式，杜绝任意列名拼接注入面
+        order_clause = sql.SQL("")
+        if order_by == "updated_at_desc":
+            order_clause = sql.SQL(
+                "ORDER BY COALESCE(payload->>'updated_at', payload->>'created_at') DESC NULLS LAST"
+            )
 
         with self._get_cursor() as cur:
             cur.execute(
@@ -724,8 +734,9 @@ class PGVector(VectorStoreBase):
                 SELECT id, payload
                 FROM {}
                 {}
+                {}
                 LIMIT %s
-                """).format(self._col(), filter_clause),
+                """).format(self._col(), filter_clause, order_clause),
                 (*filter_params, top_k),
             )
             results = cur.fetchall()

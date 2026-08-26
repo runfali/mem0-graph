@@ -1662,6 +1662,9 @@ class Memory(MemoryBase):
                 mem_metadata_update[k] = v
             mem_metadata_update["data"] = merged_text
             mem_metadata_update["hash"] = hashlib.md5(merged_text.encode()).hexdigest()
+            # 语义合并必须同步刷新分词（二轮审计 fix-12）：text_lemmatized 从原
+            # payload 继承的是旧文本分词，FTS/Bm25 会长期按被合并掉的旧词命中
+            mem_metadata_update["text_lemmatized"] = lemmatize_for_bm25(merged_text)
             if "created_at" not in mem_metadata_update:
                 mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
             mem_metadata_update["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1700,6 +1703,10 @@ class Memory(MemoryBase):
                         logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to insert updated memories: {e}")
+
+        # 二轮审计 fix-4：语义 DELETE/UPDATE 事件在入口清缓存之后数秒才落库，
+        # 期间并发 search 已可重填缓存——写路径结束前必须再失效一次
+        self._search_depth_cache.clear()
 
         if not records:
             self.db.save_messages(messages, session_scope)
@@ -3198,6 +3205,9 @@ class Memory(MemoryBase):
             except Exception as e:
                 logger.warning(f"Failed to reset graph store: {e}")
 
+        # 二轮审计 fix-4：reset 是全库清空写路径，缓存必须一并失效
+        self._search_depth_cache.clear()
+
         capture_event("mem0.reset", self, {"sync_type": "sync"})
         display_first_run_notice(self, "sync", "reset")
 
@@ -4002,6 +4012,9 @@ class AsyncMemory(MemoryBase):
                 mem_metadata_update[k] = v
             mem_metadata_update["data"] = merged_text
             mem_metadata_update["hash"] = hashlib.md5(merged_text.encode()).hexdigest()
+            # 语义合并必须同步刷新分词（二轮审计 fix-12）：text_lemmatized 从原
+            # payload 继承的是旧文本分词，FTS/Bm25 会长期按被合并掉的旧词命中
+            mem_metadata_update["text_lemmatized"] = lemmatize_for_bm25(merged_text)
             if "created_at" not in mem_metadata_update:
                 mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
             mem_metadata_update["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -4038,6 +4051,9 @@ class AsyncMemory(MemoryBase):
                         logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to insert updated memories (async): {e}")
+
+        # 二轮审计 fix-4：同 sync 版，写路径结束前再失效一次
+        self._search_depth_cache.clear()
 
         if not records:
             await asyncio.to_thread(self.db.save_messages, messages, session_scope)
@@ -5580,6 +5596,9 @@ class AsyncMemory(MemoryBase):
                 await asyncio.to_thread(self.graph.reset)
             except Exception as e:
                 logger.warning(f"Failed to reset graph store: {e}")
+
+        # 二轮审计 fix-4：async reset 同样必须失效搜索缓存
+        self._search_depth_cache.clear()
 
         capture_event("mem0.reset", self, {"sync_type": "async"})
         await display_first_run_notice_async(self, "async", "reset")

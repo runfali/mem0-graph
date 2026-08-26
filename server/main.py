@@ -631,10 +631,13 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
 
 
 def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    # 先按上限全量拉取、排序后再截断到 limit：vector_store.list 无 ORDER BY
-    # （PG 堆扫描序），若先 LIMIT 后排序，「top_k=N」会退化成「堆序前 N 条的
-    # 排序」而非「最新 N 条」。
-    results = get_memory_instance().vector_store.list(top_k=ALL_MEMORIES_LIMIT)
+    # 二轮审计 fix-10：SQL 级排序（pgvector.list order_by 白名单模式）——
+    # 库超 ALL_MEMORIES_LIMIT 时物理序窗口会回归「最近 N 条」失效；
+    # Python 兜底排序保留（对 SQL 已排序结果幂等）
+    results = get_memory_instance().vector_store.list(
+        top_k=ALL_MEMORIES_LIMIT if limit >= ALL_MEMORIES_LIMIT else limit,
+        order_by="updated_at_desc",
+    )
     rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
     serialized = [_serialize_memory(row) for row in rows]
 
