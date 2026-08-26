@@ -1193,6 +1193,11 @@ class TestSemanticMergeUpdate:
         history = self._update_history_calls(memory)
         assert len(history) == 1 and history[0].args[0] == "uuid-1"
         assert history[0].args[2] == merged
+        # 四轮审计：合并路径历史 created_at 必须等于落库 payload 的创建时间
+        # （原值或首次初始化），而非独立的"事件时间"；updated_at 显式传事件时间
+        stored = self._stored_payload(memory)
+        assert history[0].kwargs.get("created_at") == stored.get("created_at")
+        assert history[0].kwargs.get("updated_at") is not None
 
     def test_sync_update_insert_failure_keeps_old_memory_and_skips_history(self, mocker):
         """insert 失败：无任何删除发生（旧记忆原样保留）、不写虚假 UPDATE 历史。"""

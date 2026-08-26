@@ -30,6 +30,11 @@ _RANGE_ISO_RE = re.compile(
 )
 _SINCE_AFTER_RE = re.compile(r"\b(since|after)\s+(today|yesterday|\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
 _BEFORE_UNTIL_RE = re.compile(r"\b(before|until)\s+(today|yesterday|\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+# 四轮审计：显式 ISO 起点 + 弱终点（"2024-05-01 到今天"）——弱词分支先命中
+# 会吞掉显式起点，此处先解析成 range
+_ISO_TO_WEAK_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})\s*(?:到|至|until|to)\s*(今天|昨天|today|yesterday)", re.IGNORECASE
+)
 
 _UNIT_DAYS_CN = {"天": 1, "周": 7, "月": 30, "个月": 30}
 _UNIT_DAYS_EN = {"day": 1, "days": 1, "week": 7, "weeks": 7, "month": 30, "months": 30}
@@ -169,6 +174,12 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
     m = _SINCE_AFTER_RE.search(q)
     if m:
         return {"type": "range", "start": _resolve(m.group(2), today, yesterday), "end": None, "strength": "strong"}
+
+    # 四轮审计：显式 ISO 起点 + 弱终点组合（如"2024-05-01 到今天"）
+    m = _ISO_TO_WEAK_RE.search(q)
+    if m:
+        end = _fmt(today if m.group(2) in ("今天", "today") else yesterday)
+        return {"type": "range", "start": m.group(1), "end": end, "strength": "strong"}
 
     m = _BEFORE_UNTIL_RE.search(q)
     if m:

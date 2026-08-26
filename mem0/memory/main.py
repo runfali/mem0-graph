@@ -1695,10 +1695,18 @@ class Memory(MemoryBase):
                     ids=[r[0] for r in update_records],
                     payloads=[r[3] for r in update_records],
                 )
-                # Log update history（仅成功后写，保证历史与实际数据一致）
-                for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
+                # Log update history（仅成功后写，保证历史与实际数据一致）。
+                # 四轮审计：created_at 用原 payload 创建时间（事件时间会与
+                # 直更路径的「原值+updated_at」语义不一致，时间线乱序）；
+                # updated_at 显式传当前时刻（此前落 NULL）
+                for rec in update_records:
+                    upd_id, upd_text = rec[0], rec[1]
                     try:
-                        self.db.add_history(upd_id, None, upd_text, "UPDATE", created_at=datetime.now(timezone.utc).isoformat())
+                        self.db.add_history(
+                            upd_id, None, upd_text, "UPDATE",
+                            created_at=(rec[3] or {}).get("created_at"),
+                            updated_at=datetime.now(timezone.utc).isoformat(),
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:
@@ -4047,13 +4055,15 @@ class AsyncMemory(MemoryBase):
                     ids=[r[0] for r in update_records],
                     payloads=[r[3] for r in update_records],
                 )
-                for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
+                for rec in update_records:
+                    upd_id, upd_text = rec[0], rec[1]
                     try:
-                        # 二轮审计：async 补齐 created_at（此前落 NULL 排历史时间线置顶，
-                        # 与 sync 传 now 的行为对齐）
+                        # 四轮审计：与 sync 合并路径对齐——created_at 用原值、
+                        # updated_at 显式传当前时刻
                         await asyncio.to_thread(
                             self.db.add_history, upd_id, None, upd_text, "UPDATE",
-                            created_at=datetime.now(timezone.utc).isoformat(),
+                            created_at=(rec[3] or {}).get("created_at"),
+                            updated_at=datetime.now(timezone.utc).isoformat(),
                         )
                     except Exception as e:
                         logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
