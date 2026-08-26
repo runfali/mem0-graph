@@ -67,11 +67,14 @@ _RANGE_OPERATORS = {"gt", "gte", "lt", "lte"}
 _state_lock = threading.Lock()
 _first_run_claimed_in_process = False
 _decay_usage_successful_delete_count_in_process = 0
-_temporal_usage_capacity_reached_in_process = False
-_decay_usage_capacity_reached_in_process = False
-_scale_threshold_capacity_reached_in_process = False
-_performance_slow_query_capacity_reached_in_process = False
-_feature_error_capacity_reached_in_process = set()
+# 容量判定进程缓存：布尔会让「首次判满」永久静默后续 notice——滑动窗口滚过、
+# 旧 entries 全部过期后必须允许重查。存判定时刻（datetime），超过各自窗口即
+# 失效重查；None = 从未判满。见 _capacity_stamp_fresh。
+_temporal_usage_capacity_reached_in_process: Optional[datetime] = None
+_decay_usage_capacity_reached_in_process: Optional[datetime] = None
+_scale_threshold_capacity_reached_in_process: Optional[datetime] = None
+_performance_slow_query_capacity_reached_in_process: Optional[datetime] = None
+_feature_error_capacity_reached_in_process: Dict[str, datetime] = {}
 _scale_memory_count_adds_since_check = 0
 _scale_memory_count_checked_in_process = False
 _scale_memory_count_threshold_evaluated_in_process = False
@@ -260,7 +263,7 @@ def detect_decay_usage_from_delete() -> Optional[Tuple[str, str, Optional[int], 
     global _decay_usage_successful_delete_count_in_process
     try:
         with _state_lock:
-            if _decay_usage_capacity_reached_in_process:
+            if _capacity_stamp_fresh(_decay_usage_capacity_reached_in_process, DECAY_USAGE_WINDOW):
                 return None
             _decay_usage_successful_delete_count_in_process += 1
             delete_count = _decay_usage_successful_delete_count_in_process
@@ -898,9 +901,15 @@ def _update_first_run_variant(variant) -> None:
         return
 
 
+def _capacity_stamp_fresh(stamp: Optional[datetime], window: timedelta) -> bool:
+    """进程级容量判定是否仍有效：超过滑动窗口即失效（旧 entries 已滑出，需重查）。"""
+    return stamp is not None and datetime.now(timezone.utc) - stamp < window
+
+
 def _feature_error_at_capacity(notice_id: str) -> bool:
-    if notice_id in _feature_error_capacity_reached_in_process:
+    if _capacity_stamp_fresh(_feature_error_capacity_reached_in_process.get(notice_id), FEATURE_ERROR_WINDOW):
         return True
+    _feature_error_capacity_reached_in_process.pop(notice_id, None)
 
     try:
         with _state_lock:
@@ -908,7 +917,7 @@ def _feature_error_at_capacity(notice_id: str) -> bool:
             entries = _recent_feature_error_entries(config, notice_id, datetime.now(timezone.utc))
             at_capacity = len(entries) >= FEATURE_ERROR_CAP
             if at_capacity:
-                _feature_error_capacity_reached_in_process.add(notice_id)
+                _feature_error_capacity_reached_in_process[notice_id] = datetime.now(timezone.utc)
             return at_capacity
     except Exception:
         return True
@@ -928,7 +937,7 @@ def _record_feature_error_opportunity(
             config = _load_config()
             entries = _recent_feature_error_entries(config, notice_id, now)
             if len(entries) >= FEATURE_ERROR_CAP:
-                _feature_error_capacity_reached_in_process.add(notice_id)
+                _feature_error_capacity_reached_in_process[notice_id] = datetime.now(timezone.utc)
                 return False
 
             entries.append(
@@ -952,7 +961,7 @@ def _record_feature_error_opportunity(
             config[STATE_SECTION] = state
             _write_config(config)
             if len(entries) >= FEATURE_ERROR_CAP:
-                _feature_error_capacity_reached_in_process.add(notice_id)
+                _feature_error_capacity_reached_in_process[notice_id] = datetime.now(timezone.utc)
             return True
     except Exception:
         return False
@@ -984,8 +993,9 @@ def _recent_feature_error_entries(config: Dict[str, Any], notice_id: str, now: d
 
 def _temporal_usage_at_capacity() -> bool:
     global _temporal_usage_capacity_reached_in_process
-    if _temporal_usage_capacity_reached_in_process:
+    if _capacity_stamp_fresh(_temporal_usage_capacity_reached_in_process, TEMPORAL_USAGE_WINDOW):
         return True
+    _temporal_usage_capacity_reached_in_process = None
 
     try:
         with _state_lock:
@@ -993,7 +1003,7 @@ def _temporal_usage_at_capacity() -> bool:
             entries = _recent_temporal_usage_entries(config, datetime.now(timezone.utc))
             at_capacity = len(entries) >= TEMPORAL_USAGE_CAP
             if at_capacity:
-                _temporal_usage_capacity_reached_in_process = True
+                _temporal_usage_capacity_reached_in_process = datetime.now(timezone.utc)
             return at_capacity
     except Exception:
         return True
@@ -1014,7 +1024,7 @@ def _record_temporal_usage_opportunity(
             config = _load_config()
             entries = _recent_temporal_usage_entries(config, now)
             if len(entries) >= TEMPORAL_USAGE_CAP:
-                _temporal_usage_capacity_reached_in_process = True
+                _temporal_usage_capacity_reached_in_process = datetime.now(timezone.utc)
                 return False
 
             entries.append(
@@ -1039,7 +1049,7 @@ def _record_temporal_usage_opportunity(
             config[STATE_SECTION] = state
             _write_config(config)
             if len(entries) >= TEMPORAL_USAGE_CAP:
-                _temporal_usage_capacity_reached_in_process = True
+                _temporal_usage_capacity_reached_in_process = datetime.now(timezone.utc)
             return True
     except Exception:
         return False
@@ -1071,8 +1081,9 @@ def _recent_temporal_usage_entries(config: Dict[str, Any], now: datetime):
 
 def _decay_usage_at_capacity() -> bool:
     global _decay_usage_capacity_reached_in_process
-    if _decay_usage_capacity_reached_in_process:
+    if _capacity_stamp_fresh(_decay_usage_capacity_reached_in_process, DECAY_USAGE_WINDOW):
         return True
+    _decay_usage_capacity_reached_in_process = None
 
     try:
         with _state_lock:
@@ -1080,7 +1091,7 @@ def _decay_usage_at_capacity() -> bool:
             entries = _recent_decay_usage_entries(config, datetime.now(timezone.utc))
             at_capacity = len(entries) >= DECAY_USAGE_CAP
             if at_capacity:
-                _decay_usage_capacity_reached_in_process = True
+                _decay_usage_capacity_reached_in_process = datetime.now(timezone.utc)
             return at_capacity
     except Exception:
         return True
@@ -1103,7 +1114,7 @@ def _record_decay_usage_opportunity(
             config = _load_config()
             entries = _recent_decay_usage_entries(config, now)
             if len(entries) >= DECAY_USAGE_CAP:
-                _decay_usage_capacity_reached_in_process = True
+                _decay_usage_capacity_reached_in_process = datetime.now(timezone.utc)
                 return False
 
             entry = {
@@ -1131,7 +1142,7 @@ def _record_decay_usage_opportunity(
             config[STATE_SECTION] = state
             _write_config(config)
             if len(entries) >= DECAY_USAGE_CAP:
-                _decay_usage_capacity_reached_in_process = True
+                _decay_usage_capacity_reached_in_process = datetime.now(timezone.utc)
             return True
     except Exception:
         return False
@@ -1163,8 +1174,9 @@ def _recent_decay_usage_entries(config: Dict[str, Any], now: datetime):
 
 def _scale_threshold_at_capacity() -> bool:
     global _scale_threshold_capacity_reached_in_process
-    if _scale_threshold_capacity_reached_in_process:
+    if _capacity_stamp_fresh(_scale_threshold_capacity_reached_in_process, SCALE_THRESHOLD_WINDOW):
         return True
+    _scale_threshold_capacity_reached_in_process = None
 
     try:
         with _state_lock:
@@ -1172,7 +1184,7 @@ def _scale_threshold_at_capacity() -> bool:
             entries = _recent_scale_threshold_entries(config, datetime.now(timezone.utc))
             at_capacity = len(entries) >= SCALE_THRESHOLD_CAP
             if at_capacity:
-                _scale_threshold_capacity_reached_in_process = True
+                _scale_threshold_capacity_reached_in_process = datetime.now(timezone.utc)
             return at_capacity
     except Exception:
         return True
@@ -1196,7 +1208,7 @@ def _record_scale_threshold_opportunity(
             config = _load_config()
             entries = _recent_scale_threshold_entries(config, now)
             if len(entries) >= SCALE_THRESHOLD_CAP:
-                _scale_threshold_capacity_reached_in_process = True
+                _scale_threshold_capacity_reached_in_process = datetime.now(timezone.utc)
                 return False
 
             entry = {
@@ -1228,7 +1240,7 @@ def _record_scale_threshold_opportunity(
             config[STATE_SECTION] = state
             _write_config(config)
             if len(entries) >= SCALE_THRESHOLD_CAP:
-                _scale_threshold_capacity_reached_in_process = True
+                _scale_threshold_capacity_reached_in_process = datetime.now(timezone.utc)
             return True
     except Exception:
         return False
@@ -1285,8 +1297,9 @@ def _recent_scale_threshold_entries(config: Dict[str, Any], now: datetime):
 
 def _performance_slow_query_at_capacity() -> bool:
     global _performance_slow_query_capacity_reached_in_process
-    if _performance_slow_query_capacity_reached_in_process:
+    if _capacity_stamp_fresh(_performance_slow_query_capacity_reached_in_process, PERFORMANCE_SLOW_QUERY_WINDOW):
         return True
+    _performance_slow_query_capacity_reached_in_process = None
 
     try:
         with _state_lock:
@@ -1294,7 +1307,7 @@ def _performance_slow_query_at_capacity() -> bool:
             entries = _recent_performance_slow_query_entries(config, datetime.now(timezone.utc))
             at_capacity = len(entries) >= PERFORMANCE_SLOW_QUERY_CAP
             if at_capacity:
-                _performance_slow_query_capacity_reached_in_process = True
+                _performance_slow_query_capacity_reached_in_process = datetime.now(timezone.utc)
             return at_capacity
     except Exception:
         return True
@@ -1314,7 +1327,7 @@ def _record_performance_slow_query_opportunity(
             config = _load_config()
             entries = _recent_performance_slow_query_entries(config, now)
             if len(entries) >= PERFORMANCE_SLOW_QUERY_CAP:
-                _performance_slow_query_capacity_reached_in_process = True
+                _performance_slow_query_capacity_reached_in_process = datetime.now(timezone.utc)
                 return False
 
             entries.append(
@@ -1338,7 +1351,7 @@ def _record_performance_slow_query_opportunity(
             config[STATE_SECTION] = state
             _write_config(config)
             if len(entries) >= PERFORMANCE_SLOW_QUERY_CAP:
-                _performance_slow_query_capacity_reached_in_process = True
+                _performance_slow_query_capacity_reached_in_process = datetime.now(timezone.utc)
             return True
     except Exception:
         return False

@@ -34,9 +34,9 @@ class FakeFlags:
 
 @pytest.fixture(autouse=True)
 def reset_notice_process_state():
-    notices._performance_slow_query_capacity_reached_in_process = False
+    notices._performance_slow_query_capacity_reached_in_process = None
     yield
-    notices._performance_slow_query_capacity_reached_in_process = False
+    notices._performance_slow_query_capacity_reached_in_process = None
 
 
 @pytest.fixture

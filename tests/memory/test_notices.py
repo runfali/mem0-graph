@@ -31,10 +31,10 @@ class FakeFlags:
 def reset_notice_process_state():
     notices._first_run_claimed_in_process = False
     notices._decay_usage_successful_delete_count_in_process = 0
-    notices._temporal_usage_capacity_reached_in_process = False
-    notices._decay_usage_capacity_reached_in_process = False
-    notices._scale_threshold_capacity_reached_in_process = False
-    notices._performance_slow_query_capacity_reached_in_process = False
+    notices._temporal_usage_capacity_reached_in_process = None
+    notices._decay_usage_capacity_reached_in_process = None
+    notices._scale_threshold_capacity_reached_in_process = None
+    notices._performance_slow_query_capacity_reached_in_process = None
     notices._feature_error_capacity_reached_in_process.clear()
     notices._scale_memory_count_adds_since_check = 0
     notices._scale_memory_count_checked_in_process = False
@@ -42,10 +42,10 @@ def reset_notice_process_state():
     yield
     notices._first_run_claimed_in_process = False
     notices._decay_usage_successful_delete_count_in_process = 0
-    notices._temporal_usage_capacity_reached_in_process = False
-    notices._decay_usage_capacity_reached_in_process = False
-    notices._scale_threshold_capacity_reached_in_process = False
-    notices._performance_slow_query_capacity_reached_in_process = False
+    notices._temporal_usage_capacity_reached_in_process = None
+    notices._decay_usage_capacity_reached_in_process = None
+    notices._scale_threshold_capacity_reached_in_process = None
+    notices._performance_slow_query_capacity_reached_in_process = None
     notices._feature_error_capacity_reached_in_process.clear()
     notices._scale_memory_count_adds_since_check = 0
     notices._scale_memory_count_checked_in_process = False
@@ -1561,3 +1561,23 @@ def test_notice_priority_scale_beats_first_run(monkeypatch):
     )
 
     assert calls == ["scale"]
+
+
+def test_capacity_stamp_expires_after_window(notice_harness, monkeypatch):
+    """进程级容量判定超过滑动窗口后必须失效重查。
+
+    旧布尔语义：首次判满后永久 True，窗口滚过、entries 全部过期后该类
+    notice 在本进程内永远静默。新契约：stamp 过期 → 重查库（空 config 未满
+    → False），且过期 stamp 被清为 None。
+    """
+    notices._temporal_usage_capacity_reached_in_process = (
+        datetime.now(timezone.utc) - notices.TEMPORAL_USAGE_WINDOW - timedelta(minutes=1)
+    )
+    assert notices._temporal_usage_at_capacity() is False
+    assert notices._temporal_usage_capacity_reached_in_process is None
+
+    # 窗口内的 stamp 仍然有效：不重查、直接返回已满
+    fresh = datetime.now(timezone.utc)
+    notices._temporal_usage_capacity_reached_in_process = fresh
+    assert notices._temporal_usage_at_capacity() is True
+    assert notices._temporal_usage_capacity_reached_in_process == fresh
