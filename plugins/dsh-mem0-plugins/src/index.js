@@ -28,6 +28,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
 import { distillQuery } from './distill.js'
+import { buildResultList, truncateOutput } from './formatting.js'
 
 /** Cordis 插件短名（路由/日志用）。 */
 export const name = 'mem0'
@@ -67,7 +68,12 @@ export const Config = z.object({
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
-  requestTimeoutMs: z.number().step(1).min(1000).max(900000).default(300000)
+  requestTimeoutMs: z.number().step(1).min(1000).max(900000).default(300000),
+  // 工具输出硬化（2026-08-26，详见 plan/tool-output-hardening）：
+  // 总行数上限是保险丝（topK≤50 时日常不触发）；常用的是单条截断与紧凑格式。
+  outputMaxLines: z.number().step(1).min(10).max(2000).default(200), // 工具回执总行数上限
+  outputMaxKb: z.number().step(1).min(1).max(500).default(50), // 工具回执总字节上限（KB 单位，人性化）
+  itemMaxChars: z.number().step(1).min(50).max(10000).default(1000) // 单条记忆文本上限（字符）
 })
 
 const METADATA_CHANNEL = 'dsh'
@@ -181,7 +187,10 @@ export function apply(ctx, config = {}) {
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
-      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 900000, 300000)
+      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 900000, 300000),
+      outputMaxLines: clampInt(value.outputMaxLines, 10, 2000, 200),
+      outputMaxBytes: clampInt(value.outputMaxKb, 1, 500, 50) * 1024,
+      itemMaxChars: clampInt(value.itemMaxChars, 50, 10000, 1000)
     }
   }
 
@@ -443,6 +452,34 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // 工具输出硬化（2026-08-26）：
+  // · mem0_search 专用 render——紧凑行格式（省 token、id 行内可引用、age 带时间感、
+  //   类别来自服务端已有 metadata）+ 单条截断（itemMaxChars，按码点不拆半）；
+  // · 其余工具渲染统一套 truncateOutput 兜底（总行数/总字节上限，保险丝语义）。
+  // data 结构不变（count/results[{id,memory,score,…}]），只改模型可见层；
+  // score/created_at 缺失（graph 片段）时紧凑行对应省略。
+  const renderSearchResult = (value) => {
+    if (!value || value.ok !== true) {
+      return 'Error: ' + ((value && value.error) || 'unknown error')
+    }
+    const s = spec()
+    const data = value.data
+    if (typeof data === 'string') return data // 空结果等纯文本回执原样透传
+    if (data === undefined || data === null) return 'OK'
+    let text
+    try {
+      text = buildResultList(data.results, { itemMaxChars: s.itemMaxChars })
+    } catch {
+      text = JSON.stringify(data, null, 2) // 防御兜底：格式器异常不吞回执
+    }
+    return truncateOutput(text, { maxLines: s.outputMaxLines, maxBytes: s.outputMaxBytes })
+  }
+
+  const renderTruncated = (_args, value) => {
+    const s = spec()
+    return [{ type: 'text', text: truncateOutput(renderToolValue(value), { maxLines: s.outputMaxLines, maxBytes: s.outputMaxBytes }) }]
+  }
+
   const registerTool = (definition) => {
     ctx.tools.register(definition)
   }
@@ -466,7 +503,7 @@ export function apply(ctx, config = {}) {
     },
     output: {
       schema: TOOL_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+      render: (_args, value) => [{ type: 'text', text: renderSearchResult(value) }]
     },
     isConcurrencySafe: () => true,
     async execute(args, exec) {
@@ -503,7 +540,12 @@ export function apply(ctx, config = {}) {
           results: results.map((item) => ({
             id: item && item.id ? String(item.id) : '',
             memory: item && typeof item.memory === 'string' ? item.memory : '',
-            score: item && typeof item.score === 'number' ? item.score : 0
+            // score/created_at/updated_at/metadata：服务端本就返回（graph 片段除外），
+            // 仅透传到 render 层供紧凑格式展示（age/类别/排名依据）；缺失按省略处理
+            score: item && typeof item.score === 'number' && Number.isFinite(item.score) ? item.score : undefined,
+            created_at: item && typeof item.created_at === 'string' ? item.created_at : undefined,
+            updated_at: item && typeof item.updated_at === 'string' ? item.updated_at : undefined,
+            metadata: item && item.metadata && typeof item.metadata === 'object' ? item.metadata : undefined
           }))
         })
       } catch (error) {
@@ -526,7 +568,7 @@ export function apply(ctx, config = {}) {
     },
     output: {
       schema: TOOL_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+      render: renderTruncated
     },
     async execute(args, exec) {
       const s = spec()
@@ -556,7 +598,7 @@ export function apply(ctx, config = {}) {
     },
     output: {
       schema: TOOL_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+      render: renderTruncated
     },
     async execute(args, exec) {
       const s = spec()
@@ -588,7 +630,7 @@ export function apply(ctx, config = {}) {
     },
     output: {
       schema: TOOL_OUTPUT_SCHEMA,
-      render: (_args, value) => [{ type: 'text', text: renderToolValue(value) }]
+      render: renderTruncated
     },
     async execute(args, exec) {
       const s = spec()

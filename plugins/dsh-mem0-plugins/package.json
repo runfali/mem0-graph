@@ -8,6 +8,7 @@
     ".": "./src/index.js",
     "./backend": "./src/backend.js",
     "./coalesce": "./src/coalesce.js",
+    "./formatting": "./src/formatting.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },

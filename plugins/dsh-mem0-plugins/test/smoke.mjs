@@ -187,7 +187,10 @@ function resolveConfigManually(schema, entry) {
     queueMaxLen: 50,
     breakerThreshold: 5,
     breakerCooldownMs: 120000,
-    requestTimeoutMs: 300000
+    requestTimeoutMs: 300000,
+    outputMaxLines: 200,
+    outputMaxKb: 50,
+    itemMaxChars: 1000
   }
   return { ...defaults, ...(entry || {}) }
 }
@@ -570,6 +573,45 @@ console.log('== 工具蒸馏：mem0_search 长 query 走意图提炼 ==')
   assert.equal(result.data.results[0].id, 'm-1'); ok('search 返回归一化 results')
   const rendered = searchTool.output.render({}, result)
   assert.equal(rendered[0].type, 'text'); ok('render 输出 text block')
+}
+
+console.log('== 工具输出硬化：紧凑行格式 + 截断 + clamp ==')
+{
+  const searchTool = env.tools[0]
+  const renderText = (result) => searchTool.output.render({}, result)[0].text
+
+  // 1) 紧凑行格式：类别/age/id/score 齐备，多行记忆净化成单行，graph 片段缺失省略，无 JSON 壳
+  searchResponse = {
+    results: [
+      { id: 'm-1', memory: '发哥偏好\n结论先行', score: 0.91, created_at: new Date(Date.now() - 2 * 24 * 3600 * 1000).toISOString(), metadata: { memory_type: 'PREFERENCES' } },
+      { id: 'g-1', memory: 'graph 片段无 score' }
+    ]
+  }
+  const ok1 = await searchTool.execute({ query: '格式' }, { signal: new AbortController().signal })
+  const t1 = renderText(ok1)
+  assert.ok(t1.startsWith('1. [PREFERENCES] 发哥偏好 结论先行'), '类别 + 多行净化成单行')
+  assert.ok(t1.includes('(2d ago) [mem0:m-1] (score 0.91)'), 'age/id/score 齐备')
+  assert.ok(t1.includes('2. [memory] graph 片段无 score [mem0:g-1]'), 'graph 片段缺失项省略')
+  assert.ok(!t1.includes('"results"') && !t1.includes('"count"'), '无 JSON 壳')
+  ok('搜索回执为紧凑行格式（类别/age/id/score，无 JSON 壳）')
+
+  // 2) 超长结果（60 条 × 2KB，单条截断 1000 后仍 ≈60KB > 50KB）：截断不抛错、显式标记存在
+  searchResponse = { results: Array.from({ length: 60 }, (_, i) => ({ id: 'big-' + i, memory: 'x'.repeat(2000), score: 0.5 })) }
+  const ok2 = await searchTool.execute({ query: '超长' }, { signal: new AbortController().signal })
+  const t2 = renderText(ok2)
+  assert.ok(t2.includes('[Output truncated:'), '显式截断标记')
+  assert.ok(t2.includes('cut at 50KB'), '字节原因上报')
+  ok('>50KB mock 回执截断不抛错且带标记')
+
+  // 3) spec() clamp：行数阈值生效（1 → clamp 到下限 10），越界/非数回落默认值（itemMaxChars 回落 1000）
+  env.setScope({ ...env.getScope(), itemMaxChars: 'abc', outputMaxKb: 99999, outputMaxLines: 1 })
+  const ok3 = await searchTool.execute({ query: '超长' }, { signal: new AbortController().signal })
+  const t3 = renderText(ok3)
+  assert.ok(t3.includes('[Output truncated: showing 10 of 60 lines'), 'outputMaxLines=1 越界回落下限 10 生效')
+  assert.ok(!t3.includes('cut at'), '行截断后字节已不超，不再报字节原因')
+  assert.ok(t3.includes('…[截断]'), 'itemMaxChars 非数回落 1000 → 2KB 单条被截')
+  ok('spec() clamp：行数阈值生效、越界/非数回落默认值')
+  env.setScope({ ...env.getScope(), itemMaxChars: undefined, outputMaxKb: undefined, outputMaxLines: undefined })
 }
 
 console.log('== 工具执行：add/update/delete ==')

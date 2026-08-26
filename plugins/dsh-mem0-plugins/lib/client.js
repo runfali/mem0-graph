@@ -57,7 +57,10 @@ window.__ModuleLoader__.load({
       { key: "queueMaxLen", type: "number", min: 5, max: 1000 },
       { key: "breakerThreshold", type: "number", min: 1, max: 100 },
       { key: "breakerCooldownMs", type: "number", min: 1000, max: 3600000 },
-      { key: "requestTimeoutMs", type: "number", min: 1000, max: 900000 }
+      { key: "requestTimeoutMs", type: "number", min: 1000, max: 900000 },
+      { key: "outputMaxLines", type: "number", min: 10, max: 2000 },
+      { key: "outputMaxKb", type: "number", min: 1, max: 500 },
+      { key: "itemMaxChars", type: "number", min: 50, max: 10000 }
     ];
 
     function parseFieldValue(field, raw) {
@@ -336,7 +339,14 @@ window.__ModuleLoader__.load({
       "field.breakerCooldownMs": "熔断冷却（毫秒）",
       "hint.breakerCooldownMs": "熔断后经过该时长自动恢复，默认 120000",
       "field.requestTimeoutMs": "单次请求总超时（毫秒）",
-      "hint.requestTimeoutMs": "插件到 mem0 server 的单请求总闸（search/add 共用），与 hermes 一致默认 300000"
+      "hint.requestTimeoutMs": "插件到 mem0 server 的单请求总闸（search/add 共用），与 hermes 一致默认 300000",
+      "group.output": "工具输出硬化",
+      "field.outputMaxLines": "回执总行数上限",
+      "hint.outputMaxLines": "工具回执总行数上限，超出保留头部并显式标注，默认 200；当前 topK≤50 时是保险丝（防未来放开条数/服务端异常返回超量）",
+      "field.outputMaxKb": "回执总字节上限（KB）",
+      "hint.outputMaxKb": "工具回执总字节上限，超出保留头部并显式标注，默认 50KB",
+      "field.itemMaxChars": "单条记忆文本上限（字符）",
+      "hint.itemMaxChars": "每条记忆文本超过该长度按码点截断并标注『…[截断]』；默认 1000（实测我方库 p95≈500 字符，正常记忆不受影响）"
     };
     const en = Object.assign({}, zh, {
       "card.title": "Mem0 memory (dsh-mem0-plugins)",
@@ -360,7 +370,8 @@ window.__ModuleLoader__.load({
       { titleKey: "group.connection", keys: ["enabled", "host", "apiKey", "userId", "agentId"] },
       { titleKey: "group.recall", keys: ["forceRecallStep", "topK", "rerank", "distillEnabled", "distillMinChars", "distillInputMaxChars", "distillBaseUrl", "distillApiKey", "distillModel", "distillTimeoutMs", "distillRetryAfterMs"] },
       { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars", "feedbackEnabled"] },
-      { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] }
+      { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] },
+      { titleKey: "group.output", keys: ["outputMaxLines", "outputMaxKb", "itemMaxChars"] }
     ];
 
     // ---- 视图组件 ----
