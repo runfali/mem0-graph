@@ -37,8 +37,11 @@ _ISO_TO_WEAK_RE = re.compile(
     re.IGNORECASE,
 )
 # 五轮审计：弱起点 + 显式 ISO 终点（"今天到 2024-05-01"）
+# 六轮审计：until 语义是"截止"而非"从 X 起"——若在此匹配会反转方向
+# （'今天 until 2026-08-01' 的 start 被伪造为今天），英文 until 留给
+# _BEFORE_UNTIL_RE 的单侧截止处理；中文 到/至 与英文 to 保留双向
 _WEAK_TO_ISO_RE = re.compile(
-    r"(今天|昨天|today|yesterday)\s*(?:到|至|until|to)\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE
+    r"(今天|昨天|today|yesterday)\s*(?:到|至|to)\s*(\d{4}-\d{2}-\d{2})", re.IGNORECASE
 )
 
 _UNIT_DAYS_CN = {"天": 1, "周": 7, "月": 30, "个月": 30}
@@ -194,6 +197,9 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
         if connector == "至今":
             return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
         if connector in ("之后", "以来", "以后", "起"):
+            # 六轮审计：先读已捕获的 tail——'X 起至今' 直接收口到今天
+            if tail == "至今":
+                return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
             # 单侧开区间；残留部分若含今天/昨天则收口（如"2024-05-01 之后到今天"）
             rest = q[m.end():]
             if "今天" in rest or "today" in rest.lower():
@@ -201,8 +207,18 @@ def detect_temporal_intent(query: str, window_days: int = 7) -> Optional[dict]:
             if "昨天" in rest or "yesterday" in rest.lower():
                 return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}
             return {"type": "range", "start": start, "end": None, "strength": "strong"}
-        end = _fmt(today if tail in ("今天", "today", "至今") else yesterday)
-        return {"type": "range", "start": start, "end": end, "strength": "strong"}
+        if tail in ("今天", "today", "至今"):
+            return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
+        if tail == "昨天" or tail == "yesterday":
+            return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}
+        # 六轮审计：tail 为空（连接词后非弱词尾部，如"到货/到岗/到现在/到月底"）——
+        # 旧实现凭空造 end=昨天 是假阳性；"到现在/今" 收今天，其余回落单日期
+        rest = q[m.end():]
+        if any(w in rest for w in ("现在", "今")):
+            return {"type": "range", "start": start, "end": _fmt(today), "strength": "strong"}
+        if "昨天" in rest or "yesterday" in rest.lower():
+            return {"type": "range", "start": start, "end": _fmt(yesterday), "strength": "strong"}
+        return {"type": "date", "date": start, "strength": "strong"}
 
     m = _WEAK_TO_ISO_RE.search(q)
     if m:

@@ -346,3 +346,74 @@ def test_feedback_existing_row_decimal_return_path(client):
     resp = _post(client, memory_id="dec-1", feedback_type="useful")
     assert resp.status_code == 200, resp.text
     assert resp.json()["salience_score"] == 1.0
+
+
+@pytest.fixture
+def file_client(tmp_path):
+    """六轮审计：文件库 + QueuePool——并发用例需要每线程独立连接。"""
+    from sqlalchemy.pool import QueuePool
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'evolve_concurrent.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+        poolclass=QueuePool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    app = FastAPI()
+    app.include_router(evolve_router.router)
+
+    def _fake_admin():
+        return User(
+            id=uuid.UUID(int=1), name="t", email="t@t.local", password_hash="", role="admin"
+        )
+
+    app.dependency_overrides[require_auth] = _fake_admin
+
+    def override_get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app), TestingSessionLocal
+
+
+def test_feedback_concurrent_first_touch_no_delta_loss(file_client):
+    """六轮审计：并发首触落败分支必须基于胜者当前分累加——旧实现按 1.0
+    基准覆盖会静默丢掉胜者 delta（不同 feedback_type 并发首触同一记忆）。"""
+    import threading
+
+    client, _ = file_client
+    results = {}
+
+    def post(memory_id, ftype):
+        try:
+            r = client.post("/evolve/feedback", json={"memory_id": memory_id, "feedback_type": ftype})
+            results[ftype] = r.status_code
+        except Exception as e:  # noqa: BLE001
+            results[ftype] = str(e)
+
+    threads = [
+        threading.Thread(target=post, args=("ftc-1", "useless")),    # -0.15
+        threading.Thread(target=post, args=("ftc-1", "correction")),  # -0.05
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert set(results.values()) == {200}, results
+    # 最终分数 = 1.0 - 0.15 - 0.05 = 0.80（两 delta 都应用；useful 会被 clamp 到
+    # 1.0 干扰判定故不用）——若落败分支按 1.0 基准覆盖，结果会是 0.95 或 0.85
+    with file_client[1]() as db:
+        row = db.get(EvolveSalience, "ftc-1")
+        assert row is not None
+        assert abs(row.salience_score - 0.80) < 1e-9, row.salience_score
+        adj_count = db.query(EvolveSalienceAdjustment).filter(
+            EvolveSalienceAdjustment.memory_id == "ftc-1"
+        ).count()
+        assert adj_count == 2, adj_count

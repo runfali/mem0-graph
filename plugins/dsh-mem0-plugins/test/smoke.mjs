@@ -691,6 +691,28 @@ console.log('== 单元：merge 分支真触达（五轮审计）==')
   ok('merge 分支真触达：retries 继承 + 内容合并')
 }
 
+console.log('== 单元：demote 路径 cap（六轮审计）==')
+{
+  // fastpath 失败降级入桶路径必须同样受单桶上限约束（maxTurns 放大绕过）
+  let attempts = 0
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 1000, maxChars: 1e9, fastpathChars: 1, cooldownMs: 120000 }),
+    addFn: async () => { attempts += 1; throw new Error('network fail') },
+    log: {}
+  })
+  for (let i = 0; i < 130; i++) {
+    q.enqueue({ userId: 'u', sessionId: 'sD', userContent: '快路径内容' + i, assistantContent: '答' })
+    q.drain()
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 5))
+  await settle()   // 等 fastpath 失败降级入桶完成
+  const bucket = q.buckets.get('u\u0000sD')
+  assert.ok(bucket, 'demote 桶存在')
+  assert.equal(bucket.messages.length / 2, 100); ok('demote 桶消息对收敛到 100')
+  assert.ok(!JSON.stringify(bucket.messages).includes('快路径内容0'), '最旧消息对被截断')
+  assert.ok(q.stats.dropped >= 30, '截断计数: ' + q.stats.dropped); ok('demote 截断有计数')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({

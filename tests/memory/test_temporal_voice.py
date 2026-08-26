@@ -441,3 +441,26 @@ def test_iso_to_weak_range_extensions():
     # 反向：今天到 ISO
     r = detect_temporal_intent("今天到 2026-08-01")
     assert r["type"] == "range" and r["end"] == "2026-08-01"
+
+
+def test_iso_connector_false_positives_and_edge_phrases():
+    """六轮审计：连接词 tail 可选化的假阳性回归——非弱词尾部不得伪造区间。"""
+    from mem0.memory.temporal_intent import detect_temporal_intent
+
+    # 非弱词尾部（到货/到岗/到月底）：回落单日期，不得造 range 或假 end=昨天
+    for q in ("2026-08-01 到货", "2026-08-01 到月底", "2026-08-01 到达广州"):
+        r = detect_temporal_intent(q)
+        assert r["type"] == "date" and r["date"] == "2026-08-01", (q, r)
+
+    # "到现在/到现在为止" → 收口到今天
+    for q in ("2024-05-01 到现在", "2024-05-01 到现在为止"):
+        r = detect_temporal_intent(q)
+        assert r["type"] == "range" and r["start"] == "2024-05-01" and r["end"] is not None, (q, r)
+
+    # "起至今" → 收口到今天（tail 被开区间分支正确读取）
+    r = detect_temporal_intent("2026-08-01 起至今")
+    assert r["type"] == "range" and r["end"] is not None, r
+
+    # 英文 until = 截止语义：不得伪造弱起点
+    r = detect_temporal_intent("今天 until 2026-08-01")
+    assert r["type"] == "range" and r["start"] is None and r["end"] == "2026-08-01", r
