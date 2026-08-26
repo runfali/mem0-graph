@@ -62,7 +62,7 @@
 
 | 能力 | hermes | dsh-mem0-plugins | 状态 |
 |------|--------|------------------|------|
-| HTTP 总闸 | httpx timeout=300.0 | requestTimeoutMs 默认 300000 | ✅ 对齐 |
+| HTTP 总闸 | httpx timeout=420.0 | requestTimeoutMs 默认 420000 | ✅ 对齐 |
 | 连接级重试 | httpx transport retries=2 | fetch 失败重试 1 次（250ms 退避） | ✅ 等价 |
 | 熔断器 | 5 连败→120s 冷却 | CircuitBreaker 同参数，阈值/冷却可热调 | ✅ 对齐+更优 |
 | 配置方式 | `$HERMES_HOME/mem0.json` + env，改后需重启 | 设置页卡片 29 字段 live 生效，无需重启 | ✅ 更优 |

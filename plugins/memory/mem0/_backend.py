@@ -117,7 +117,7 @@ class SelfHostedBackend(Mem0Backend):
         if transport is None:
             transport = httpx.HTTPTransport(retries=2)
         self._client = httpx.Client(
-            base_url=host.rstrip("/"), headers=headers, timeout=300.0,
+            base_url=host.rstrip("/"), headers=headers, timeout=420.0,
             transport=transport,
         )
 

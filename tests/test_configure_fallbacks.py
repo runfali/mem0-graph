@@ -160,8 +160,8 @@ class TestBuildLlmFallbacksFromEnv:
         ]
         # fallbacks 必须在 llm 层，不能污染 llm.config（否则 OpenAIConfig(**config) 抛 TypeError）
         assert "fallbacks" not in server_main.DEFAULT_CONFIG["llm"]["config"]
-        # layer_timeout 同样在 llm 层（与 fallbacks 平级），默认 60s
-        assert server_main.DEFAULT_CONFIG["llm"]["layer_timeout"] == 60.0
+        # layer_timeout 同样在 llm 层（与 fallbacks 平级），默认 120s
+        assert server_main.DEFAULT_CONFIG["llm"]["layer_timeout"] == 120.0
 
     def test_no_fallback_env_returns_empty(self):
         assert self.build({}) == []

@@ -10,7 +10,7 @@ from mem0.llms.configs import LlmConfig
 from mem0.llms.fallback import FallbackLLM
 
 
-def _llm_cfg(provider, model, fallbacks=(), layer_timeout=60.0):
+def _llm_cfg(provider, model, fallbacks=(), layer_timeout=120.0):
     return LlmConfig(
         provider=provider,
         config={"model": model},

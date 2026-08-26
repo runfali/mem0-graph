@@ -225,7 +225,7 @@ DEFAULT_CONFIG = {
         "provider": "openai",
         "config": LLM_CONFIG,
         "fallbacks": _llm_fallbacks,
-        "layer_timeout": float(os.environ.get("MEM0_LLM_FALLBACK_TIMEOUT", "60")),
+        "layer_timeout": float(os.environ.get("MEM0_LLM_FALLBACK_TIMEOUT", "120")),
     },
     "embedder": {"provider": "openai", "config": EMBEDDER_CONFIG},
     "history_db_path": HISTORY_DB_PATH,

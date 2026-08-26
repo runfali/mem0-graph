@@ -187,7 +187,7 @@ function resolveConfigManually(schema, entry) {
     queueMaxLen: 50,
     breakerThreshold: 5,
     breakerCooldownMs: 120000,
-    requestTimeoutMs: 300000,
+    requestTimeoutMs: 420000,
     outputMaxLines: 200,
     outputMaxKb: 50,
     itemMaxChars: 1000
@@ -777,6 +777,8 @@ console.log('== 工具蒸馏：mem0_search 长 query 走意图提炼 ==')
   assert.equal(result.ok, true)
   assert.equal(result.data.count, 1)
   assert.equal(result.data.results[0].id, 'm-1'); ok('search 返回归一化 results')
+  const hasUndefined = (v) => v === undefined || (Array.isArray(v) && v.some(hasUndefined)) || (v && typeof v === 'object' && Object.values(v).some(hasUndefined))
+  assert.equal(hasUndefined(result.data), false); ok('search data 无 undefined，满足 lossless JSON')
   const rendered = searchTool.output.render({}, result)
   assert.equal(rendered[0].type, 'text'); ok('render 输出 text block')
 }

@@ -68,7 +68,7 @@ export const Config = z.object({
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
-  requestTimeoutMs: z.number().step(1).min(1000).max(900000).default(300000),
+  requestTimeoutMs: z.number().step(1).min(1000).max(900000).default(420000),
   // 工具输出硬化（2026-08-26，详见 plan/tool-output-hardening）：
   // 总行数上限是保险丝（topK≤50 时日常不触发）；常用的是单条截断与紧凑格式。
   outputMaxLines: z.number().step(1).min(10).max(2000).default(200), // 工具回执总行数上限
@@ -187,7 +187,7 @@ export function apply(ctx, config = {}) {
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
-      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 900000, 300000),
+      requestTimeoutMs: clampInt(value.requestTimeoutMs, 1000, 900000, 420000),
       outputMaxLines: clampInt(value.outputMaxLines, 10, 2000, 200),
       outputMaxBytes: clampInt(value.outputMaxKb, 1, 500, 50) * 1024,
       itemMaxChars: clampInt(value.itemMaxChars, 50, 10000, 1000)
@@ -543,16 +543,20 @@ export function apply(ctx, config = {}) {
         if (!results || results.length === 0) return toolOk('No relevant memories found.')
         return toolOk({
           count: results.length,
-          results: results.map((item) => ({
-            id: item && item.id ? String(item.id) : '',
-            memory: item && typeof item.memory === 'string' ? item.memory : '',
-            // score/created_at/updated_at/metadata：服务端本就返回（graph 片段除外），
-            // 仅透传到 render 层供紧凑格式展示（age/类别/排名依据）；缺失按省略处理
-            score: item && typeof item.score === 'number' && Number.isFinite(item.score) ? item.score : undefined,
-            created_at: item && typeof item.created_at === 'string' ? item.created_at : undefined,
-            updated_at: item && typeof item.updated_at === 'string' ? item.updated_at : undefined,
-            metadata: item && item.metadata && typeof item.metadata === 'object' ? item.metadata : undefined
-          }))
+          results: results.map((item) => {
+            // 注意：不能给缺失字段写 undefined——dsh-session 要求工具 data 是
+            // lossless JSON，undefined 无法无损 JSON 往返，会直接报
+            // “value is not lossless JSON”。缺失字段应整体省略，而不是置 undefined。
+            const row = {
+              id: item && item.id ? String(item.id) : '',
+              memory: item && typeof item.memory === 'string' ? item.memory : ''
+            }
+            if (item && typeof item.score === 'number' && Number.isFinite(item.score)) row.score = item.score
+            if (item && typeof item.created_at === 'string') row.created_at = item.created_at
+            if (item && typeof item.updated_at === 'string') row.updated_at = item.updated_at
+            if (item && item.metadata && typeof item.metadata === 'object') row.metadata = item.metadata
+            return row
+          })
         })
       } catch (error) {
         // 熔断计数由 Mem0Client 内部统一记录，这里不重复计

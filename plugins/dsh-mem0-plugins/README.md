@@ -97,7 +97,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `queueMaxLen` | `50` | 待写队列上限，满时丢最旧 |
 | `breakerThreshold` | `5` | 连续失败达该次数熔断 |
 | `breakerCooldownMs` | `120000` | 熔断冷却时长 |
-| `requestTimeoutMs` | `300000` | 单请求总闸，search/add 共用（对齐 hermes `httpx timeout=300.0`） |
+| `requestTimeoutMs` | `420000` | 单请求总闸，search/add 共用（对齐 hermes `httpx timeout=420.0`） |
 
 ![可靠性与超时配置：队列/熔断/总闸](docs/screenshot/配置展示-5.png)
 
@@ -190,7 +190,7 @@ JSON 剥除与快速直写为 debug 级。熔断开合、直接写在失败时�
 
 | 层级 | 默认值 | 说明 |
 |------|--------|------|
-| HTTP 总闸 `requestTimeoutMs` | 300s | 插件→server 单请求上限；server 内 LLM 三层兜底最坏 180s，正常召回摸不到总闸 |
+| HTTP 总闸 `requestTimeoutMs` | 420s | 插件→server 单请求上限；server 内 LLM 三层兜底最坏 360s，正常召回摸不到总闸 |
 | 召回形态 | 工具驱动 | 不再做后台预取注入；模型先调 `mem0_search`（内部蒸馏+搜索），工具卡在 UI 即召回动作 |
 | 工具级额外限時 | 无 | 有意不设——只有总闸一层，与 hermes 行为一致 |
 

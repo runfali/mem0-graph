@@ -65,7 +65,7 @@ class ClientfulLLM(MockLLM):
         self.client = FakeClient()
 
 
-def _make(primary, *fallbacks, layer_timeout=60.0):
+def _make(primary, *fallbacks, layer_timeout=120.0):
     return FallbackLLM(primary, list(fallbacks), layer_timeout=layer_timeout)
 
 
@@ -88,7 +88,7 @@ def test_injects_timeout_only():
 
     fallback.generate_response([{"role": "user", "content": "hi"}])
 
-    assert primary.call_kwargs[0]["timeout"] == 60.0
+    assert primary.call_kwargs[0]["timeout"] == 120.0
     assert "max_retries" not in primary.call_kwargs[0]
 
 
@@ -130,15 +130,15 @@ def test_init_skips_llm_without_client():
 
     fallback = _make(primary, fb1)
 
-    assert fallback.layer_timeout == 60.0
+    assert fallback.layer_timeout == 120.0
 
 
-def test_default_layer_timeout_is_60():
+def test_default_layer_timeout_is_120():
     primary = MockLLM(result="ok")
 
     fallback = FallbackLLM(primary, [])
 
-    assert fallback.layer_timeout == 60.0
+    assert fallback.layer_timeout == 120.0
 
 
 def test_custom_layer_timeout_is_used():

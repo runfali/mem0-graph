@@ -7,7 +7,7 @@ class LlmConfig(BaseModel):
     provider: str = Field(description="Provider of the LLM (e.g., 'ollama', 'openai')", default="openai")
     config: Optional[dict] = Field(description="Configuration for the specific LLM", default={})
     fallbacks: List["LlmConfig"] = Field(default=[], description="兜底 LLM 配置列表")
-    layer_timeout: float = Field(default=60.0, description="FallbackLLM 每层超时（秒），与 fallbacks 平级")
+    layer_timeout: float = Field(default=120.0, description="FallbackLLM 每层超时（秒），与 fallbacks 平级")
 
     @field_validator("config")
     def validate_config(cls, v, values):

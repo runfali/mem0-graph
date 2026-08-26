@@ -277,7 +277,7 @@ cd /data/mem0_falkordb/server && docker compose up -d --force-recreate mem0
 | `MEM0_LLM_MAX_TOKENS` | `2000` | LLM 最大生成 token 数 |
 | `MEM0_LLM_MAX_INPUT_TOKENS` | `0`（不限制） | 兼容旧配置。已由 `MEM0_LLM_CONTEXT_WINDOW` 取代（未设置 CONTEXT_WINDOW 时回退使用） |
 | `MEM0_LLM_CONTEXT_WINDOW` | `0`（不限制） | LLM 上下文窗口总大小（n_ctx）。分块按此计算并预留输出余量，避免 chunk 逼近窗口上限被截断（旧表现为 `JSON parse failed on chunk 0` + llama.cpp 日志 `truncated=1`）。8K 显存 llama.cpp（n_ctx=16384）建议设 16384。**依赖 tiktoken**（requirements.txt 已含）：容器无 tiktoken 时估算 fallback `len//4`，对中文严重低估（约 45%），分块会偏大 |
-| `MEM0_LLM_FALLBACK_TIMEOUT` | `60` | FallbackLLM 每层超时（秒）：主 LLM 异常/超时自动切换下一层时单层的等待预算 |
+| `MEM0_LLM_FALLBACK_TIMEOUT` | `120` | FallbackLLM 每层超时（秒）：主 LLM 异常/超时自动切换下一层时单层的等待预算 |
 | `MEM0_LLM_FALLBACK_MODEL` | 空 | 兜底 1 模型（主 LLM 失败/超时自动切换，最多 2 个兜底层） |
 | `MEM0_LLM_FALLBACK_BASE_URL` | 空 | 兜底 1 Base URL |
 | `MEM0_LLM_FALLBACK_API_KEY` | 空 | 兜底 1 API Key |
