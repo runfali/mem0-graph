@@ -138,3 +138,29 @@ def test_completions_create_messages_default_does_not_leak_between_calls(mock_me
         f"Completions.create(messages=...) must default to None to avoid the "
         f"B006 shared-default-list bug; got {messages_default!r}."
     )
+
+
+def test_fetch_relevant_memories_merges_entity_params_into_filters(mock_memory_client):
+    """四轮审计：实体参数必须归入 filters——client.search 的 ENTITY_PARAMS
+    拒收顶层 user_id/agent_id/run_id，直接透传会让 search 入口 ValueError。"""
+    from mem0.proxy.main import Completions
+
+    completions = Completions(mock_memory_client)
+    mock_memory_client.search.return_value = {"results": [{"memory": "x"}]}
+
+    completions._fetch_relevant_memories(
+        messages=[{"role": "user", "content": "hi"}],
+        user_id="u1",
+        agent_id="a1",
+        run_id=None,
+        filters={"extra": 1},
+        top_k=5,
+    )
+
+    call = mock_memory_client.search.call_args
+    kwargs = call.kwargs if call.kwargs else call[1]
+    assert kwargs.get("filters") == {"extra": 1, "user_id": "u1", "agent_id": "a1"}
+    assert "user_id" not in kwargs or "user_id" in kwargs.get("filters", {}), "顶层 user_id 不得透传"
+    assert "agent_id" not in kwargs or "agent_id" in kwargs.get("filters", {}), "顶层 agent_id 不得透传"
+    assert "run_id" not in kwargs, "顶层 run_id 不得透传"
+    assert kwargs.get("top_k") == 5

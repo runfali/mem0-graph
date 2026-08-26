@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -257,6 +257,18 @@ def change_password(
     _require_password_length(body.new_password)
 
     db_user.password_hash = hash_password(body.new_password)
+    # 四轮审计：改密吊销该用户全部未消费 refresh token——否则被盗的旧
+    # refresh token 在 30 天有效期内仍可轮换新 access
+    from models import RefreshTokenJti
+
+    db.execute(
+        update(RefreshTokenJti)
+        .where(
+            RefreshTokenJti.user_id == db_user.id,
+            RefreshTokenJti.used_at.is_(None),
+        )
+        .values(used_at=datetime.now(timezone.utc))
+    )
     db.commit()
     return MessageResponse(message="Password updated.")
 

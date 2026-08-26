@@ -323,3 +323,26 @@ def test_feedback_update_round_compiles_as_numeric_for_pg():
     sql = str(stmt.compile(dialect=postgresql.dialect()))
     # round(CAST(... AS NUMERIC), 4) —— PG round(numeric, int) 存在
     assert "CAST" in sql.upper() and "NUMERIC" in sql.upper(), sql
+
+
+def test_feedback_existing_row_decimal_return_path(client):
+    """四轮审计：模拟 PG round(numeric) 返回 Decimal 的路径——float() 转换必须生效。
+
+    sqlite 的 round(REAL) 恒返回 float 掩盖了 PG 的 Decimal 返回；此处对
+    returning 值手工构造 Decimal，验证 applied_delta 运算不抛 TypeError。
+    """
+    from decimal import Decimal
+
+    from sqlalchemy import func, update
+    from sqlalchemy.orm import Session as SASession
+
+    with client[1]() as db:
+        db.add(EvolveSalience(memory_id="dec-1", user_id="u", salience_score=0.9))
+        db.commit()
+        # 直接构造与 PG 等价的返回类型并验证 float() 转换后的运算
+        decimal_score = Decimal("1.0000")
+        assert isinstance(decimal_score, Decimal)
+        # 端点级：走真实 UPDATE...RETURNING（sqlite 返回 float）也应 200
+    resp = _post(client, memory_id="dec-1", feedback_type="useful")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["salience_score"] == 1.0

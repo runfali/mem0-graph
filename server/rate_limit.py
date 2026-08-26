@@ -41,7 +41,7 @@ limiter = Limiter(key_func=get_remote_address)
 logger = logging.getLogger(__name__)
 
 _WINDOW_SECONDS = {"second": 1, "minute": 60, "hour": 3600}
-_EXEMPT_PREFIXES = ("/auth", "/docs", "/redoc", "/openapi.json", "/health")
+_EXEMPT_PREFIXES = ("/auth", "/docs", "/redoc", "/openapi.json", "/health", "/v1/ping")
 
 
 def parse_rate(spec: str) -> tuple[int, int]:

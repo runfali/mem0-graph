@@ -41,19 +41,19 @@ def _mock_session():
 def _mock_memory():
     """Patch Memory.from_config so the server imports without a real backend.
 
-    Yields (mock_instance, mock_save_config, mock_save_overrides):
-    the last two record whether config.json got written and DB overrides
-    got bypassed, without touching the real filesystem or database.
+    Yields (mock_instance, mock_save_config):
+    the last records whether config.json got written, without touching the
+    real filesystem or database. (_save_overrides 已删除——DB overrides 层
+    彻底移除，见四轮审计)
     """
     mock_instance = MagicMock()
     with patch.dict(os.environ, {"OPENAI_API_KEY": "fake-key"}):
         with patch("mem0.Memory.from_config", return_value=mock_instance):
             with patch("server_state._load_overrides", return_value={}):
-                with patch("server_state._save_overrides") as mock_save_overrides:
-                    with patch("server_state._save_config_file") as mock_save_config:
-                        with patch("db.SessionLocal", return_value=_mock_session()):
-                            with patch("auth.SessionLocal", return_value=_mock_session()):
-                                yield mock_instance, mock_save_config, mock_save_overrides
+                with patch("server_state._save_config_file") as mock_save_config:
+                    with patch("db.SessionLocal", return_value=_mock_session()):
+                        with patch("auth.SessionLocal", return_value=_mock_session()):
+                            yield mock_instance, mock_save_config
 
 
 def _load_app(env_overrides: dict):
@@ -228,7 +228,7 @@ class TestConfigurePersistsToConfigFile:
     def _setup(self, _mock_memory, tmp_path):
         import server_state
 
-        self.mock_save_config, self.mock_save_overrides = _mock_memory[1], _mock_memory[2]
+        self.mock_save_config = _mock_memory[1]
         self.server_state = server_state
         # Fresh config file per test: the merge assertions below depend on the
         # on-disk baseline, so sharing one session-wide file leaks state.
@@ -245,10 +245,6 @@ class TestConfigurePersistsToConfigFile:
         assert path == self.server_state._config_file_path()
         assert saved["llm"]["fallbacks"] == fallbacks
         assert "embedder" in saved
-
-    def test_configure_no_longer_writes_db_overrides(self):
-        self.client.post("/configure", json={"llm": {"provider": "openai"}})
-        self.mock_save_overrides.assert_not_called()
 
     def test_save_config_failure_keeps_current_config(self):
         self.mock_save_config.side_effect = OSError("disk full")

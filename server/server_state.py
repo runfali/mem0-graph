@@ -36,32 +36,6 @@ def _load_overrides() -> Dict[str, Any]:
         return {}
 
 
-def _save_overrides(overrides: Dict[str, Any]) -> None:
-    try:
-        if _session_factory is None:
-            return
-        from models import Settings
-        from sqlalchemy.dialects.postgresql import insert
-
-        session = _session_factory()
-        try:
-            serialized = json.dumps(overrides)
-            stmt = (
-                insert(Settings)
-                .values(key="config_overrides", value=serialized)
-                .on_conflict_do_update(
-                    index_elements=[Settings.key],
-                    set_={"value": serialized},
-                )
-            )
-            session.execute(stmt)
-            session.commit()
-        finally:
-            session.close()
-    except Exception:
-        logging.warning("Failed to persist config overrides to database", exc_info=True)
-
-
 def _merge_config(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     merged = deepcopy(base)
 
