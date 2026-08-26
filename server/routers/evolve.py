@@ -15,6 +15,7 @@ from models import (
 from pydantic import BaseModel
 from server_state import get_current_config
 from sqlalchemy import ColumnElement, String, and_, case, column, func, or_, select, table, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/evolve", tags=["evolve"])
@@ -128,7 +129,15 @@ def submit_feedback(
         salience = EvolveSalience(
             memory_id=body.memory_id, user_id=owner, salience_score=1.0, updated_at=now
         )
-        db.add(salience)
+        try:
+            # SAVEPOINT 收口 check-then-act 竞态：并发首次 feedback 双方同时
+            # INSERT 同 PK 时，后到者 IntegrityError 只回滚保存点（不牵连同
+            # 事务内已 flush 的 feedback 写入），重读对方行后走统一分支。
+            with db.begin_nested():
+                db.add(salience)
+                db.flush()
+        except IntegrityError:
+            salience = db.get(EvolveSalience, body.memory_id)
     elif salience.user_id is None and owner:
         # Backfill the owner cache on first touch of a legacy row.
         salience.user_id = owner
@@ -167,17 +176,27 @@ def retain_memory(
     owner = _authorize_memory_write(request, user, memory_id, db)
     now = datetime.now(timezone.utc)
     salience = db.get(EvolveSalience, memory_id)
-    if salience is None:
-        salience = EvolveSalience(
-            memory_id=memory_id, user_id=owner, last_access_at=now, updated_at=now
-        )
-        db.add(salience)
-    else:
+    if salience is not None:
         if salience.user_id is None and owner:
             # Backfill the owner cache on first touch of a legacy row.
             salience.user_id = owner
         salience.last_access_at = now
         salience.updated_at = now
+    else:
+        salience = EvolveSalience(
+            memory_id=memory_id, user_id=owner, last_access_at=now, updated_at=now
+        )
+        try:
+            # SAVEPOINT 收口并发首触竞态（同 feedback 端点注释）
+            with db.begin_nested():
+                db.add(salience)
+                db.flush()
+        except IntegrityError:
+            salience = db.get(EvolveSalience, memory_id)
+            if salience.user_id is None and owner:
+                salience.user_id = owner
+            salience.last_access_at = now
+            salience.updated_at = now
     db.commit()
 
     return RetainResponse(memory_id=memory_id, last_access_at=now.isoformat())
