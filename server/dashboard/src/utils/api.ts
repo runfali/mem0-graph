@@ -21,20 +21,36 @@ const redirectToLogin = () => {
   }
 };
 
-const refreshAccessToken = async () => {
-  const refreshResponse = await fetch("/api/auth/refresh", {
-    method: "POST",
-    credentials: "include",
-  });
+// single-flight 刷新：并发 401 共享同一次 POST /api/auth/refresh。
+// 后端 refresh jti 单次有效（轮换制）：若无去重，多请求页面的并发 401
+// （冷启动、access token 过期后的聚合查询）必然产生多次刷新竞争，失败的
+// 并发方会把已正常续期的用户硬踢回登录页（spurious logout）。
+let refreshPromise: Promise<string | null> | null = null;
 
-  if (!refreshResponse.ok) {
-    return null;
+const refreshAccessToken = (): Promise<string | null> => {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const refreshResponse = await fetch("/api/auth/refresh", {
+          method: "POST",
+          credentials: "include",
+        });
+        if (!refreshResponse.ok) return null;
+        const data = await refreshResponse.json();
+        setAccessToken(data.access_token);
+        return data.access_token as string;
+      } catch {
+        // 网络错误/响应解析失败一律视为刷新失败，保证 promise 永不 reject
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
   }
-
-  const data = await refreshResponse.json();
-  setAccessToken(data.access_token);
-  return data.access_token as string;
+  return refreshPromise;
 };
+
+type RetriableConfig = NonNullable<AxiosError["config"]> & { _retry?: boolean };
 
 const createApi = (): AxiosInstance & {
   postStream: (url: string, data: unknown) => Promise<Response>;
@@ -59,17 +75,17 @@ const createApi = (): AxiosInstance & {
   api.interceptors.response.use(
     (response) => response,
     async (error: AxiosError<{ error?: string }>) => {
-      if (error.response?.status === 401) {
-        handleTokenError();
-
-        try {
-          const nextToken = await refreshAccessToken();
-          if (nextToken && error.config) {
-            error.config.headers = error.config.headers ?? {};
-            error.config.headers.Authorization = `Bearer ${nextToken}`;
-            return api.request(error.config);
-          }
-        } catch {}
+      const config = error.config as RetriableConfig | undefined;
+      if (error.response?.status === 401 && config && !config._retry) {
+        // 先等 single-flight 刷新结果：成功则换新 token 重放一次；
+        // 刷新失败才清会话并登出。_retry 防止重放仍 401 时的二次刷新循环。
+        const nextToken = await refreshAccessToken();
+        if (nextToken) {
+          config._retry = true;
+          config.headers = config.headers ?? {};
+          config.headers.Authorization = `Bearer ${nextToken}`;
+          return api.request(config);
+        }
 
         handleTokenError();
         redirectToLogin();
@@ -84,19 +100,30 @@ const createApi = (): AxiosInstance & {
   );
 
   const postStream = async (url: string, data: unknown): Promise<Response> => {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}${url}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: cachedToken ? `Bearer ${cachedToken}` : "",
-      },
-      body: JSON.stringify(data),
-    });
+    const doFetch = (token: string | null) =>
+      fetch(`${process.env.NEXT_PUBLIC_API_URL}${url}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? `Bearer ${token}` : "",
+        },
+        body: JSON.stringify(data),
+      });
+
+    let response = await doFetch(cachedToken);
 
     if (response.status === 401) {
-      handleTokenError();
-      redirectToLogin();
-      throw new Error("未授权");
+      // 与 axios 拦截器共用同一 single-flight 刷新：刷新成功重发一次，
+      // 仍 401 才清会话登出（与其他并发请求的刷新结果保持一致）
+      const nextToken = await refreshAccessToken();
+      if (nextToken) {
+        response = await doFetch(nextToken);
+      }
+      if (response.status === 401) {
+        handleTokenError();
+        redirectToLogin();
+        throw new Error("未授权");
+      }
     }
 
     if (!response.ok) {
