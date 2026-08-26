@@ -600,6 +600,28 @@ console.log('== 单元：短路期入队不拦截 + fastpath 降级 + 半开重�
   assert.ok(bucket.retries <= 5, 'retries 未累计到上限: ' + bucket.retries); ok('跨冷却失败间隔重置计数')
 }
 
+console.log('== 单元：桶全局预算（三轮审计）==')
+{
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 50, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async () => { throw new Error('breaker open') },
+    log: {}
+  })
+  // 短路期灌入 70 个会话的桶（> 64 上限）：最旧桶被丢、其余存活
+  for (let i = 0; i < 70; i++) {
+    q.enqueue({ userId: 'u', sessionId: 'sB' + i, userContent: '会话' + i + '的内容', assistantContent: '答' })
+    q.drain()
+  }
+  assert.equal(q.buckets.size, 64); ok('桶数收敛到预算上限 64')
+  assert.ok(q.stats.dropped >= 6); ok('超限最旧桶已丢并计数')
+  const keys = [...q.buckets.keys()]
+  // 精确匹配（'sB10'.includes('sB1') 为 true 会误判）；桶 key 是 'userId\u0000sessionId'
+  const droppedNames = new Set(['sB0', 'sB1', 'sB2', 'sB3', 'sB4', 'sB5'])
+  const kept = keys.map((k) => k.split('\u0000')[1])
+  assert.ok(!kept.some((n) => droppedNames.has(n)), '最旧桶被优先丢弃: ' + kept.slice(0, 3).join(','))
+  ok('最旧桶优先丢、新会话存活')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({

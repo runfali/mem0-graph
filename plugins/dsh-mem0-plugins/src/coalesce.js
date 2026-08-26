@@ -55,6 +55,33 @@ export class TidalCoalescer {
     this.flushing = 0;
   }
 
+  /**
+   * 桶全局预算（三轮审计）：短路期不拦截入队后，桶只在成功冲刷时移除——
+   * 长故障 + 多会话下桶数可能无界增长（queueMaxLen 只管 queue 不管桶）。
+   * 超限时丢最旧桶（created 最早）并计数，以内存换不丢的承诺保留在预算内。
+   */
+  #enforceBucketBudget() {
+    const MAX_BUCKETS = 64;
+    while (this.buckets.size > MAX_BUCKETS) {
+      let oldestKey = null;
+      let oldest = Infinity;
+      for (const [k, b] of this.buckets) {
+        if (b.created < oldest) {
+          oldest = b.created;
+          oldestKey = k;
+        }
+      }
+      if (oldestKey === null) break;
+      const victim = this.buckets.get(oldestKey);
+      this.buckets.delete(oldestKey);
+      this.stats.dropped += victim.messages.length / 2;
+      if (this.log.warn) {
+        this.log.warn('mem0 bucket budget exceeded, dropped oldest bucket (session=' +
+          (victim.sessionId || '<empty>') + ', messages=' + victim.messages.length + ')');
+      }
+    }
+  }
+
   /** 非阻塞入队；队满丢最旧。上限每次入队动态读取（设置卡可热调）。 */
   enqueue(item) {
     const config = this.resolveConfig()
@@ -124,6 +151,7 @@ export class TidalCoalescer {
     bucket.messages.push(...messages);
     bucket.chars += chars;
     bucket.last = ts;
+    this.#enforceBucketBudget();
     const turns = bucket.messages.length / 2;
     // 字符上限按「桶累积值」判定：当条 chars 已被 fastpathChars(默认2000) 挡住，
     // 用当条值对比 maxChars(默认4000) 永不触发，活跃会话的桶会无限膨胀
@@ -171,6 +199,7 @@ export class TidalCoalescer {
     bucket.messages.push(...messages);
     bucket.chars += chars;
     bucket.last = ts;
+    this.#enforceBucketBudget();
     const turns = bucket.messages.length / 2;
     if (bucket.chars >= (this.resolveConfig().maxChars > 0 ? this.resolveConfig().maxChars : 4000)
         || turns >= (this.resolveConfig().maxTurns > 0 ? this.resolveConfig().maxTurns : 5)) {
