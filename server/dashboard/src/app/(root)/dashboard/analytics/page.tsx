@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { zhCN } from "date-fns/locale";
 import { RefreshCw } from "lucide-react";
@@ -589,6 +589,32 @@ export default function AnalyticsPage() {
 
   const { search_quality, feedback, heat, operations, recall } = report;
 
+  // 列出记忆的区块统一：按各自时间字段倒序（最新在前）后交 DataTable 内置
+  // 分页（每页 10 条），首页即「最新的 10 条」；无时间字段的榜单保持后端业务序。
+  const mostCorrectedDesc = useMemo(
+    () => [...feedback.most_corrected].sort((a, b) => b.count - a.count),
+    [feedback.most_corrected],
+  );
+  const highFrequencyDesc = useMemo(
+    () =>
+      [...heat.high_frequency].sort((a, b) => b.access_count - a.access_count),
+    [heat.high_frequency],
+  );
+  const staleByRecency = useMemo(
+    () =>
+      [...heat.stale].sort((a, b) =>
+        (b.last_access_at ?? "").localeCompare(a.last_access_at ?? ""),
+      ),
+    [heat.stale],
+  );
+  const boostByRecency = useMemo(
+    () =>
+      [...heat.boost_adjustments].sort((a, b) =>
+        (b.created_at ?? "").localeCompare(a.created_at ?? ""),
+      ),
+    [heat.boost_adjustments],
+  );
+
   const searchRows = Object.entries(search_quality.windows).map(
     ([days, w]) => ({
       window: `${days} 天`,
@@ -908,9 +934,10 @@ export default function AnalyticsPage() {
             <Section title="纠正最多的记忆">
               {feedback.most_corrected.length > 0 ? (
                 <DataTable
-                  data={feedback.most_corrected}
+                  data={mostCorrectedDesc}
                   columns={correctedColumns}
                   getRowKey={(row) => row.memory_id}
+                  pagination={{ pageSize: 10 }}
                 />
               ) : (
                 <NoData />
@@ -941,9 +968,10 @@ export default function AnalyticsPage() {
             <Section title="高频记忆">
               {heat.high_frequency.length > 0 ? (
                 <DataTable
-                  data={heat.high_frequency}
+                  data={highFrequencyDesc}
                   columns={hotColumns}
                   getRowKey={(row) => row.memory_id}
+                  pagination={{ pageSize: 10 }}
                 />
               ) : (
                 <NoData />
@@ -965,9 +993,10 @@ export default function AnalyticsPage() {
               </div>
               {heat.stale.length > 0 ? (
                 <DataTable
-                  data={heat.stale}
+                  data={staleByRecency}
                   columns={idleColumns}
                   getRowKey={(row) => row.memory_id}
+                  pagination={{ pageSize: 10 }}
                 />
               ) : (
                 <NoData />
@@ -976,9 +1005,10 @@ export default function AnalyticsPage() {
             <Section title="提升记录">
               {heat.boost_adjustments.length > 0 ? (
                 <DataTable
-                  data={heat.boost_adjustments}
+                  data={boostByRecency}
                   columns={boostColumns}
                   getRowKey={(row) => row.memory_id}
+                  pagination={{ pageSize: 10 }}
                 />
               ) : (
                 <NoData />

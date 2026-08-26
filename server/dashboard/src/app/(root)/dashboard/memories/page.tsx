@@ -32,7 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DataTable } from "@/components/shared/data-table";
+import { DataTable, type SortState } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { EmptyState } from "@/components/self-hosted/empty-state";
 import DeleteConfirmationModal from "@/components/ui/delete-confirmation-modal";
@@ -238,8 +238,31 @@ function MemoriesContent() {
     });
   }, [memories, hasQuery, typeFilter, memoryTypeFilter, timeFilter]);
 
-  const totalPages = Math.ceil(filteredMemories.length / PAGE_SIZE);
-  const paginatedMemories = filteredMemories.slice(
+  // 列排序：对全量过滤结果生效后再分页（DataTable 为受控模式，只渲染表头态）
+  const [memSort, setMemSort] = useState<SortState<Memory> | null>(null);
+  const sortedMemories = useMemo(() => {
+    if (!memSort) return filteredMemories;
+    // 「创建时间」列展示的是 updated_at ?? created_at，排序键与其一致；
+    // 其余列直接取原值比较
+    const valueOf = (row: Memory): string | number =>
+      memSort.key === "created_at"
+        ? (row.updated_at ?? row.created_at ?? "")
+        : ((row[memSort.key] ?? "") as string | number);
+    const copy = [...filteredMemories];
+    copy.sort((a, b) => {
+      const va = valueOf(a);
+      const vb = valueOf(b);
+      const cmp =
+        typeof va === "number" && typeof vb === "number"
+          ? va - vb
+          : String(va).localeCompare(String(vb), "zh-CN");
+      return memSort.direction === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [filteredMemories, memSort]);
+
+  const totalPages = Math.ceil(sortedMemories.length / PAGE_SIZE);
+  const paginatedMemories = sortedMemories.slice(
     page * PAGE_SIZE,
     (page + 1) * PAGE_SIZE,
   );
@@ -338,19 +361,47 @@ function MemoriesContent() {
     {
       key: "memory" as keyof Memory,
       label: "内容",
-      width: 400,
+      width: 360,
+      sortable: true,
+      sortValue: (row: Memory) => row.memory ?? "",
       render: (value: string) => (
         <span className="line-clamp-2 text-sm">{value}</span>
       ),
     },
-    { key: "user_id" as keyof Memory, label: "用户", width: 100 },
-    { key: "agent_id" as keyof Memory, label: "代理", width: 100 },
+    {
+      key: "user_id" as keyof Memory,
+      label: "用户",
+      width: 90,
+      sortable: true,
+      sortValue: (row: Memory) => row.user_id ?? "",
+    },
+    {
+      key: "agent_id" as keyof Memory,
+      label: "代理",
+      width: 90,
+      sortable: true,
+      sortValue: (row: Memory) => row.agent_id ?? "",
+    },
     {
       key: "created_at" as keyof Memory,
       label: "创建时间",
-      width: 120,
+      width: 105,
+      sortable: true,
+      // 排序键用完整 ISO 时间戳（展示为日期），保证同日多条可精确排序
+      sortValue: (row: Memory) => row.created_at ?? "",
       render: (value: string) =>
         value ? format(new Date(value), "MMM d, yyyy") : "--",
+    },
+    {
+      key: "updated_at" as keyof Memory,
+      label: "修改时间",
+      width: 105,
+      sortable: true,
+      sortValue: (row: Memory) => row.updated_at ?? row.created_at ?? "",
+      render: (value: string, row: Memory) => {
+        const t = value || row.created_at;
+        return t ? format(new Date(t), "MMM d, yyyy") : "--";
+      },
     },
   ];
 
@@ -368,6 +419,8 @@ function MemoriesContent() {
       key: "memory" as keyof Memory,
       label: "内容",
       width: 400,
+      sortable: true,
+      sortValue: (row: Memory) => row.memory ?? "",
       render: (value: string, row: Memory) => (
         <div className="flex items-start gap-2">
           <span className="line-clamp-2 flex-1 text-sm">{value}</span>
@@ -375,12 +428,26 @@ function MemoriesContent() {
         </div>
       ),
     },
-    { key: "user_id" as keyof Memory, label: "用户", width: 100 },
-    { key: "agent_id" as keyof Memory, label: "代理", width: 100 },
+    {
+      key: "user_id" as keyof Memory,
+      label: "用户",
+      width: 100,
+      sortable: true,
+      sortValue: (row: Memory) => row.user_id ?? "",
+    },
+    {
+      key: "agent_id" as keyof Memory,
+      label: "代理",
+      width: 100,
+      sortable: true,
+      sortValue: (row: Memory) => row.agent_id ?? "",
+    },
     {
       key: "created_at" as keyof Memory,
       label: "更新时间",
       width: 120,
+      sortable: true,
+      sortValue: (row: Memory) => row.updated_at ?? row.created_at ?? "",
       render: (value: string, row: Memory) => {
         const t = row.updated_at ?? value;
         return t ? format(new Date(t), "MMM d, yyyy") : "--";
@@ -555,6 +622,8 @@ function MemoriesContent() {
                 <DataTable
                   data={paginatedMemories}
                   columns={columns}
+                  sort={memSort}
+                  onSortChange={setMemSort}
                   getRowKey={(row) => row.id}
                   onRowClick={(row) => setSelectedMemory(row)}
                   getRowClassName={(row) =>
@@ -573,8 +642,8 @@ function MemoriesContent() {
                 <div className="flex items-center justify-between text-sm text-onSurface-default-tertiary">
                   <span>
                     第 {page * PAGE_SIZE + 1}–
-                    {Math.min((page + 1) * PAGE_SIZE, filteredMemories.length)}{" "}
-                    条，共 {filteredMemories.length} 条
+                    {Math.min((page + 1) * PAGE_SIZE, sortedMemories.length)}{" "}
+                    条，共 {sortedMemories.length} 条
                   </span>
                   <div className="flex gap-2">
                     <Button
