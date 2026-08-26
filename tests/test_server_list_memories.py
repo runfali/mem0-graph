@@ -68,3 +68,14 @@ def test_rows_without_timestamp_sink_to_bottom(client):
     # 无时间戳行必须排在所有带时间戳行之后
     assert ids.index("no-ts") > ids.index("newest")
     assert ids.index("no-ts") > ids.index("oldest")
+
+
+def test_small_top_k_returns_newest_n_not_heap_order(client):
+    """top_k 小于总数时必须返回「最新的 N 条」，而非「堆序前 N 条的排序」。
+
+    回归：先 LIMIT 后排序会让 top_k=2 拿到 no-ts/mid（物理序前 2 条），
+    正确结果是 newest/mid。
+    """
+    resp = client.get("/memories?top_k=2")
+    ids = [m["id"] for m in resp.json()["results"]]
+    assert ids == ["newest", "mid"]

@@ -631,18 +631,20 @@ def _serialize_memory(row: Any) -> Dict[str, Any]:
 
 
 def _list_all_memories(limit: int = ALL_MEMORIES_LIMIT) -> Dict[str, Any]:
-    results = get_memory_instance().vector_store.list(top_k=limit)
+    # 先按上限全量拉取、排序后再截断到 limit：vector_store.list 无 ORDER BY
+    # （PG 堆扫描序），若先 LIMIT 后排序，「top_k=N」会退化成「堆序前 N 条的
+    # 排序」而非「最新 N 条」。
+    results = get_memory_instance().vector_store.list(top_k=ALL_MEMORIES_LIMIT)
     rows = results[0] if results and isinstance(results, list) and isinstance(results[0], list) else results or []
     serialized = [_serialize_memory(row) for row in rows]
 
     def _recency_key(m: Dict[str, Any]) -> str:
-        # vector_store.list 无 ORDER BY，返回的是 PG 堆扫描序（物理序≠时间序）：
-        # 列表端点的语义是「最新在前」，这里统一按 updated_at（缺则 created_at）
+        # 列表端点的语义是「最新在前」，统一按 updated_at（缺则 created_at）
         # 倒序；两个时间戳都缺失的行沉底。
         return m.get("updated_at") or m.get("created_at") or ""
 
     serialized.sort(key=_recency_key, reverse=True)
-    return {"results": serialized}
+    return {"results": serialized[:limit]}
 
 
 @app.get("/memories", summary="Get memories")
