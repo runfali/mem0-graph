@@ -1157,6 +1157,26 @@ class TestSemanticMergeUpdate:
     def _update_history_calls(memory):
         return [c for c in memory.db.add_history.call_args_list if len(c.args) > 3 and c.args[3] == "UPDATE"]
 
+    def test_sync_update_preserves_created_at_and_refreshes_updated_at(self, mocker):
+        """UPDATE 事件必须保留原 created_at（2026-08-26 实证：曾被覆盖成更新时刻，
+        与历史 ADD 时间不一致），只刷新 updated_at；其余原 payload 键也被继承。"""
+        memory = self._memory_with_existing(mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"})
+        memory.db.add_history = Mock()
+        merged = "服务部署在 192.0.2.163，API 端口 8888，后端使用 pgvector"
+        orig_created = "2026-08-14T01:00:00.000000+00:00"
+        payload = memory.vector_store.search.return_value[0].payload
+        payload["created_at"] = orig_created
+        payload["updated_at"] = "2026-08-20T01:00:00.000000+00:00"
+        memory.llm.generate_response.side_effect = [self._update_extraction(), merged]
+
+        memory._add_to_vector_store(
+            messages=[{"role": "user", "content": "test"}], metadata={}, filters={}, infer=True
+        )
+
+        stored = self._stored_payload(memory)
+        assert stored["created_at"] == orig_created, "创建时间必须保留原值"
+        assert stored["updated_at"] != "2026-08-20T01:00:00.000000+00:00", "更新时间必须刷新"
+
     def test_sync_update_upsert_writes_history_only_after_success(self, mocker):
         """UPDATE 事件：同 id upsert 成功后才写 UPDATE 历史，且全程零 delete。"""
         memory = self._memory_with_existing(mocker, {"data": "服务部署在 192.0.2.163，API 端口 8888"})

@@ -1341,9 +1341,11 @@ class Memory(MemoryBase):
         existing_memories = []
         uuid_mapping = {}
         old_text_by_id = {}
+        old_payload_by_id = {}
         for idx, mem in enumerate(existing_results):
             uuid_mapping[str(idx)] = mem.id
             old_text_by_id[str(mem.id)] = mem.payload.get("data", "")
+            old_payload_by_id[str(mem.id)] = mem.payload
             existing_memories.append({"id": str(idx), "text": mem.payload.get("data", "")})
 
         # Phase 2: LLM extraction (single call or chunked)
@@ -1651,10 +1653,17 @@ class Memory(MemoryBase):
                     logger.warning(f"Failed to embed merged update text, using extracted embedding: {e}")
                     merged_embedding = embed_map[new_texts[0]]
             # Schedule re-insert with merged text
-            mem_metadata_update = deepcopy(metadata)
+            # 以原 payload 为底（继承 created_at/attributed_to/自定义键等），
+            # 再覆盖请求级 metadata 与合并结果；UPDATE 语义=内容合并、元数据继承，
+            # 创建时间必须保留原值——旧实现把 created_at 覆盖成当前时刻，
+            # 导致历史「新增」与 payload created_at 不一致（2026-08-26 实证）。
+            mem_metadata_update = deepcopy(old_payload_by_id.get(str(real_id)) or {})
+            for k, v in (metadata or {}).items():
+                mem_metadata_update[k] = v
             mem_metadata_update["data"] = merged_text
             mem_metadata_update["hash"] = hashlib.md5(merged_text.encode()).hexdigest()
-            mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
+            if "created_at" not in mem_metadata_update:
+                mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
             mem_metadata_update["updated_at"] = datetime.now(timezone.utc).isoformat()
             for k in ("temporal", "temporal_date", "importance", "lane", "memory_type"):
                 if k in update_meta_by_id.get(real_id, {}):
@@ -3675,9 +3684,11 @@ class AsyncMemory(MemoryBase):
         existing_memories = []
         uuid_mapping = {}
         old_text_by_id = {}
+        old_payload_by_id = {}
         for idx, mem in enumerate(existing_results):
             uuid_mapping[str(idx)] = mem.id
             old_text_by_id[str(mem.id)] = mem.payload.get("data", "")
+            old_payload_by_id[str(mem.id)] = mem.payload
             existing_memories.append({"id": str(idx), "text": mem.payload.get("data", "")})
 
         # Phase 2: LLM extraction (single call or chunked)
@@ -3982,10 +3993,17 @@ class AsyncMemory(MemoryBase):
                 except Exception as e:
                     logger.warning(f"Failed to embed merged update text, using extracted embedding: {e}")
                     merged_embedding = embed_map[new_texts[0]]
-            mem_metadata_update = deepcopy(metadata)
+            # 以原 payload 为底（继承 created_at/attributed_to/自定义键等），
+            # 再覆盖请求级 metadata 与合并结果；UPDATE 语义=内容合并、元数据继承，
+            # 创建时间必须保留原值——旧实现把 created_at 覆盖成当前时刻，
+            # 导致历史「新增」与 payload created_at 不一致（2026-08-26 实证）。
+            mem_metadata_update = deepcopy(old_payload_by_id.get(str(real_id)) or {})
+            for k, v in (metadata or {}).items():
+                mem_metadata_update[k] = v
             mem_metadata_update["data"] = merged_text
             mem_metadata_update["hash"] = hashlib.md5(merged_text.encode()).hexdigest()
-            mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
+            if "created_at" not in mem_metadata_update:
+                mem_metadata_update["created_at"] = datetime.now(timezone.utc).isoformat()
             mem_metadata_update["updated_at"] = datetime.now(timezone.utc).isoformat()
             for k in ("temporal", "temporal_date", "importance", "lane", "memory_type"):
                 if k in update_meta_by_id.get(real_id, {}):
