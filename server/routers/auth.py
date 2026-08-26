@@ -192,6 +192,26 @@ def refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db
     )
 
 
+@router.post("/revoke-refresh")
+@limiter.limit("20/minute")
+def revoke_refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db)):
+    """吊销一个 refresh token（登出用，四轮审计）。
+
+    此前登出仅清浏览器 cookie，服务端 RefreshTokenJti 仍有效至过期——
+    被泄露的 refresh token 30 天内仍可换新 access。吊销幂等：未知/已吊销/
+    过期 jti 一律返回成功（登出不应因 token 已失效而报错）。
+    """
+    payload = decode_token(body.refresh_token)
+    jti = payload.get("jti")
+    if jti:
+        try:
+            consume_refresh_jti(jti, db)
+        except HTTPException:
+            # 已消费/过期：视为已吊销，幂等成功
+            pass
+    return {"ok": True}
+
+
 @router.get("/me", response_model=UserResponse)
 def me(user: User = Depends(require_auth)):
     return user

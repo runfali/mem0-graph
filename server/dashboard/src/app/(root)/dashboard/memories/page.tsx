@@ -337,6 +337,9 @@ function MemoriesContent() {
         setSelectedMemory(null);
       void refetch();
     } catch (error) {
+      // 四轮审计：部分失败时同样清空选择集——残留已删 id 会让再次批量删除
+      // 对 404 重试死循环（选择集永远清不掉、已删部分整体报失败）
+      setSelectedIds(new Set());
       setBatchDeleteOpen(false);
       void refetch();
       toast({

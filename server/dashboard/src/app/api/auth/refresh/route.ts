@@ -86,6 +86,20 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE() {
   const cookieStore = await cookies();
+  const refreshToken = cookieStore.get(COOKIE_NAME)?.value;
+  if (refreshToken) {
+    // 四轮审计：登出时吊销服务端 jti——此前仅删 cookie，被泄露的 refresh
+    // token 30 天内仍可换新 access；吊销幂等（未知/已吊销都返回 ok）
+    try {
+      await fetch(`${getServerApiUrl()}${AUTH_ENDPOINTS.REVOKE_REFRESH}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+    } catch {
+      // 吊销失败不阻塞登出（cookie 仍清除）
+    }
+  }
   cookieStore.delete(COOKIE_NAME);
   return NextResponse.json({ ok: true });
 }

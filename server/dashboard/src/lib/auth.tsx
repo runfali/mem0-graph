@@ -109,10 +109,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await clearRefreshToken();
-    setAccessToken(null);
-    setUser(null);
-    if (typeof window !== "undefined") window.location.href = "/login";
+    try {
+      await clearRefreshToken();
+    } finally {
+      // 四轮审计：吊销/清 cookie 网络失败也必须完成本地登出——
+      // 否则界面卡在已登录态且产生未捕获 rejection
+      setAccessToken(null);
+      setUser(null);
+      if (typeof window !== "undefined") window.location.href = "/login";
+    }
   }, []);
 
   const value = useMemo<AuthContextValue>(

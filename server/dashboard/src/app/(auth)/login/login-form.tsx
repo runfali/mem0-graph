@@ -3,6 +3,14 @@
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
+
+// 四轮审计：next 开放重定向防护——仅允许站内路径（/ 开头且不含协议/主机）
+function safeNextTarget(raw: string | null): string {
+  if (raw && raw.startsWith("/") && !raw.includes("://") && !raw.startsWith("//")) {
+    return raw;
+  }
+  return "/dashboard";
+}
 import { useTheme } from "next-themes";
 import { Check, Copy } from "lucide-react";
 import { CopyToClipboard } from "react-copy-to-clipboard";
@@ -42,7 +50,7 @@ export default function LoginForm() {
 
   useEffect(() => {
     if (!isLoading && user) {
-      router.push(searchParams.get("next") || "/dashboard");
+      router.push(safeNextTarget(searchParams.get("next")));
     }
   }, [user, isLoading, router, searchParams]);
 
@@ -58,7 +66,7 @@ export default function LoginForm() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.push(searchParams.get("next") || "/dashboard");
+      router.push(safeNextTarget(searchParams.get("next")));
     } catch (err) {
       setError(getErrorMessage(err, "登录失败"));
     } finally {
