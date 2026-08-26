@@ -107,6 +107,14 @@ export default function DashboardPage() {
 
   const { memories = [], entities = [], requests = [], totalRequests = requests.length } = data ?? {};
 
+  // 「最近记忆」按更新时间倒序显式排序后再取前 N：接口返回顺序是存储层物理序
+  // （vector_store.list 无 ORDER BY），不排序会显示成任意一批旧记忆。
+  const recentMemories = [...memories]
+    .sort((a, b) =>
+      (b.updated_at ?? b.created_at ?? "").localeCompare(a.updated_at ?? a.created_at ?? ""),
+    )
+    .slice(0, RECENT_LIMIT);
+
   const windowCount = requests.length;
   const successfulRequests = requests.filter((log) => log.statusCode < 400).length;
   const successRate =
@@ -332,7 +340,7 @@ export default function DashboardPage() {
               </p>
             ) : (
               <DataTable
-                data={memories.slice(0, RECENT_LIMIT)}
+                data={recentMemories}
                 columns={memoryColumns}
                 getRowKey={(row) => row.id}
                 onRowClick={() => {
