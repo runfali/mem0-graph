@@ -660,6 +660,37 @@ console.log('== 单元：单桶硬上限 + merge 重试继承（四轮审计）=
   assert.ok(JSON.stringify(merged.messages).includes('第一批'), '旧消息未丢'); ok('合并内容完整')
 }
 
+console.log('== 单元：merge 分支真触达（五轮审计）==')
+{
+  // addFn 挂起期间 enqueue 第二批 → flushBucket 失败回插走 merge 分支
+  let release
+  const gate = new Promise((r) => { release = r })
+  let attempts = 0
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async () => {
+      attempts += 1
+      if (attempts === 1) await gate   // 第一次挂起，制造 in-flight 窗口
+      throw new Error('reject')
+    },
+    log: {}
+  })
+  q.enqueue({ userId: 'u', sessionId: 'sM', userContent: '第一批', assistantContent: '答' })
+  q.drain()
+  const flushP = q.flushDue(Date.now() + 60000)   // 进入 in-flight（addFn 挂起）
+  await new Promise((r) => setTimeout(r, 10))
+  q.enqueue({ userId: 'u', sessionId: 'sM', userContent: '第二批', assistantContent: '答' })
+  q.drain()                                          // 在途冲刷期间新桶创建
+  release()                                          // 放行失败
+  await flushP
+  await new Promise((r) => setTimeout(r, 10))
+  const merged = q.buckets.get('u\u0000sM')
+  assert.ok(merged, '合并后桶存在')
+  assert.ok(JSON.stringify(merged.messages).includes('第一批'), '失败桶消息并入')
+  assert.ok(merged.retries >= 1, 'merge 继承 retries: ' + merged.retries)
+  ok('merge 分支真触达：retries 继承 + 内容合并')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({

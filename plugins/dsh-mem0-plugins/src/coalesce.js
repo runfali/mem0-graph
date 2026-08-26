@@ -224,6 +224,7 @@ export class TidalCoalescer {
     bucket.chars += chars;
     bucket.last = ts;
     this.#enforceBucketBudget();
+    this.#capBucketLength(bucket);
     const turns = bucket.messages.length / 2;
     if (bucket.chars >= (this.resolveConfig().maxChars > 0 ? this.resolveConfig().maxChars : 4000)
         || turns >= (this.resolveConfig().maxTurns > 0 ? this.resolveConfig().maxTurns : 5)) {
