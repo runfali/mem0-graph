@@ -82,6 +82,29 @@ export class TidalCoalescer {
     }
   }
 
+  /**
+   * 单桶消息对硬上限（四轮审计）：短路期 cap 冲刷失败回插循环会让单桶消息
+   * 无限累积（短错误不消耗 retries、无 MAX_FLUSH_RETRIES 兜底）——恢复后
+   * 一次性写入超大批可能被服务端 400 拒绝导致整桶二次丢失。超限时丢最旧
+   * 消息对并计数（与桶预算同语义：以内存换不丢，但保留硬边界）。
+   */
+  #capBucketLength(bucket) {
+    const MAX_BUCKET_TURNS = 100;
+    while (bucket.messages.length / 2 > MAX_BUCKET_TURNS) {
+      const removed = bucket.messages.splice(0, 2);
+      let removedChars = 0;
+      for (const m of removed) {
+        if (m && typeof m.content === 'string') removedChars += m.content.length;
+      }
+      bucket.chars = Math.max(0, bucket.chars - removedChars);
+      this.stats.dropped += 1;
+      if (this.log.warn) {
+        this.log.warn('mem0 bucket turns cap exceeded, dropped oldest turn (session=' +
+          (bucket.sessionId || '<empty>') + ')');
+      }
+    }
+  }
+
   /** 非阻塞入队；队满丢最旧。上限每次入队动态读取（设置卡可热调）。 */
   enqueue(item) {
     const config = this.resolveConfig()
@@ -152,6 +175,7 @@ export class TidalCoalescer {
     bucket.chars += chars;
     bucket.last = ts;
     this.#enforceBucketBudget();
+    this.#capBucketLength(bucket);
     const turns = bucket.messages.length / 2;
     // 字符上限按「桶累积值」判定：当条 chars 已被 fastpathChars(默认2000) 挡住，
     // 用当条值对比 maxChars(默认4000) 永不触发，活跃会话的桶会无限膨胀
@@ -266,8 +290,15 @@ export class TidalCoalescer {
           existing.messages = bucket.messages.concat(existing.messages);
           existing.chars += bucket.chars;
           existing.created = Math.min(existing.created, bucket.created);
+          // 四轮审计：merge 必须继承失败桶的重试状态——否则每次 merge 后
+          // retries 归零，MAX_FLUSH_RETRIES 被冲刷窗口内新轮次无限续命
+          // （服务端挂起 300s 周期下每周期都获得全新 20 次额度）
+          existing.retries = Math.max(existing.retries || 0, bucket.retries || 0);
+          if (bucket.lastFailAt) existing.lastFailAt = bucket.lastFailAt;
+          this.#capBucketLength(existing);
         } else {
           this.buckets.set(key, bucket);
+          this.#capBucketLength(bucket);
         }
         if (this.log.warn && !shortCircuited) {
           this.log.warn('mem0 coalesced flush failed (session=' + (bucket.sessionId || '<empty>') +

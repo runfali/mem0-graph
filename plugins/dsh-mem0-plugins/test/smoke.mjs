@@ -622,6 +622,44 @@ console.log('== 单元：桶全局预算（三轮审计）==')
   ok('最旧桶优先丢、新会话存活')
 }
 
+console.log('== 单元：单桶硬上限 + merge 重试继承（四轮审计）==')
+{
+  // A) 短路期同会话连续入队远超单桶上限：消息对截断到 100、最旧被丢
+  let attempts = 0
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 1000, maxChars: 1e9, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async () => { attempts += 1; const e = new Error('open'); e.shortCircuited = true; throw e },
+    log: {}
+  })
+  for (let i = 0; i < 130; i++) {
+    q.enqueue({ userId: 'u', sessionId: 'sCap', userContent: '轮次' + i, assistantContent: '答' })
+    q.drain()
+  }
+  const bucket = q.buckets.get('u\u0000sCap')
+  assert.ok(bucket, '桶存在')
+  assert.equal(bucket.messages.length / 2, 100); ok('单桶消息对收敛到 100')
+  assert.ok(!JSON.stringify(bucket.messages).includes('轮次0'), '最旧消息对被截断')
+  assert.ok(q.stats.dropped >= 30, '截断计数'); ok('截断有计数')
+
+  // B) merge 继承 retries：失败桶与冲刷期新桶合并后 retries 不归零
+  let fa = 0
+  const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async () => { fa += 1; throw new Error('reject') },
+    log: {}
+  })
+  q2.enqueue({ userId: 'u', sessionId: 'sR', userContent: '第一批', assistantContent: '答' })
+  q2.drain()
+  const settle = () => new Promise((r) => setTimeout(r, 5))
+  await q2.flushDue(Date.now() + 60000); await settle()   // 失败 retries=1
+  q2.enqueue({ userId: 'u', sessionId: 'sR', userContent: '第二批', assistantContent: '答' })
+  q2.drain()
+  await q2.flushDue(Date.now() + 60000); await settle()   // 失败 merge retries 应继承=2
+  const merged = q2.buckets.get('u\u0000sR')
+  assert.ok(merged.retries >= 2, 'merge 后 retries 继承不归零: ' + merged.retries); ok('merge 继承 retries')
+  assert.ok(JSON.stringify(merged.messages).includes('第一批'), '旧消息未丢'); ok('合并内容完整')
+}
+
 console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 {
   const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
