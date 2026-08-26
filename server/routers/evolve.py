@@ -14,7 +14,7 @@ from models import (
 )
 from pydantic import BaseModel
 from server_state import get_current_config
-from sqlalchemy import ColumnElement, String, and_, case, column, func, or_, select, table, text
+from sqlalchemy import ColumnElement, String, and_, case, column, func, or_, select, table, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -138,13 +138,38 @@ def submit_feedback(
                 db.flush()
         except IntegrityError:
             salience = db.get(EvolveSalience, body.memory_id)
-    elif salience.user_id is None and owner:
-        # Backfill the owner cache on first touch of a legacy row.
-        salience.user_id = owner
-    old_score = salience.salience_score
-    new_score = round(min(max(old_score + DELTAS[body.feedback_type], MIN_SCORE), MAX_SCORE), 4)
-    salience.salience_score = new_score
-    salience.updated_at = now
+        # 新行同样应用 delta（初始 1.0 起票——老逻辑语义，保存后与 totals 一致）
+        old_score = 1.0
+        new_score = round(min(max(1.0 + DELTAS[body.feedback_type], MIN_SCORE), MAX_SCORE), 4)
+        salience.salience_score = new_score
+        salience.updated_at = now
+    else:
+        if salience.user_id is None and owner:
+            # Backfill the owner cache on first touch of a legacy row.
+            salience.user_id = owner
+        old_score = salience.salience_score
+        # 二轮审计：已存在行的 lost-update 原子化——并发 feedback 若先读后写，
+        # 后到者覆盖先者累加（delta 静默丢失）。改 UPDATE 内置读-改-写原子累加
+        # （clamp 在 SQL 表达式内），并发双方各自正确累加。
+        delta = DELTAS[body.feedback_type]
+        new_score = db.execute(
+            update(EvolveSalience)
+            .where(EvolveSalience.memory_id == body.memory_id)
+            .values(
+                # clamp 用 CASE WHEN 而非 least/greatest：SQLite 旧版无这两函数，
+                # 生产 PG 与测试 sqlite 需同一套 SQL 语义
+                salience_score=func.round(
+                    case(
+                        (EvolveSalience.salience_score + delta > MAX_SCORE, MAX_SCORE),
+                        (EvolveSalience.salience_score + delta < MIN_SCORE, MIN_SCORE),
+                        else_=EvolveSalience.salience_score + delta,
+                    ),
+                    4,
+                ),
+                updated_at=now,
+            )
+            .returning(EvolveSalience.salience_score)
+        ).scalar_one()
 
     applied_delta = round(new_score - old_score, 4)
     db.add(

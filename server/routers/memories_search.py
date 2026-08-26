@@ -60,7 +60,10 @@ def search_memories(
 
     data_sql = (
         f"SELECT id, payload FROM {collection} WHERE {where_sql} "
-        "ORDER BY (payload->>'updated_at') DESC LIMIT :limit OFFSET :offset"
+        # 二轮审计：NULLS LAST + COALESCE 回退 created_at——与 _list_all_memories
+        # 的排序语义对齐（旧 DESC 默认 NULLS FIRST 会把缺 updated_at 的行浮顶）
+        "ORDER BY COALESCE(payload->>'updated_at', payload->>'created_at') DESC NULLS LAST "
+        "LIMIT :limit OFFSET :offset"
     )
     count_sql = f"SELECT count(*) FROM {collection} WHERE {where_sql}"
 

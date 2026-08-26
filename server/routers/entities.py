@@ -79,9 +79,17 @@ def delete_entity(entity_type: EntityType, entity_id: str, _auth=Depends(require
             # graph 清除依赖 user_id 定位用户图，避免 delete_all 因缺少 user_id 触发 KeyError
             field = TYPE_TO_FIELD[entity_type]
             filters = {field: entity_id}
-            memories = memory.vector_store.list(filters=filters)[0]
-            for m in memories:
-                memory.delete(m.id)
+            # 二轮审计：list 默认 top_k=100 无分页，>100 条记忆的实体此前只删
+            # 前 100 条且谎报成功——改为按页取满再逐条删
+            SCAN_PAGE = 500
+            while True:
+                batch = memory.vector_store.list(filters=filters, top_k=SCAN_PAGE)[0] or []
+                if not batch:
+                    break
+                for m in batch:
+                    memory.delete(m.id)
+                if len(batch) < SCAN_PAGE:
+                    break
     except Exception:
         raise upstream_error()
     return MessageResponse(message="Entity deleted")

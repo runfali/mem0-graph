@@ -257,3 +257,35 @@ def test_admin_write_does_not_stamp_owner():
     with client[1]() as db:
         row = db.get(EvolveSalience, "m-mine")
         assert row.user_id is None
+
+
+def test_feedback_savepoint_conflict_does_not_500(client):
+    """二轮审计 fix-9：并发首触的 SAVEPOINT 收口机制直测。
+
+    在同一 session 先落一行 salience，再构造同 PK 的第二对象在 savepoint 内
+    flush——后者必须捕获 IntegrityError 且不破坏外层事务（后续查询仍可用）。
+    模拟的是并发双方同时 INSERT 时后到者的路径。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    with client[1]() as db:
+        row = EvolveSalience(memory_id="svp-1", user_id="u", salience_score=1.0)
+        db.add(row)
+        db.commit()
+
+        dup = EvolveSalience(memory_id="svp-1", user_id="u", salience_score=1.0)
+        try:
+            with db.begin_nested():
+                db.add(dup)
+                db.flush()
+        except IntegrityError:
+            # 冲突被 SAVEPOINT 收口：外层事务可继续用、重读必有行
+            pass
+
+        reloaded = db.get(EvolveSalience, "svp-1")
+        assert reloaded is not None and reloaded.salience_score == 1.0
+        assert db.query(EvolveSalience).count() == 1, "重复行未泄漏"
+
+    # 端点级：已有行时 feedback 正常 200 且分数累计（非 500）
+    resp = _post(client, memory_id="svp-1", feedback_type="useful")
+    assert resp.status_code == 200

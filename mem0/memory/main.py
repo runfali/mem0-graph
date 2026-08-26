@@ -4046,7 +4046,12 @@ class AsyncMemory(MemoryBase):
                 )
                 for upd_id, upd_text in [(r[0], r[1]) for r in update_records]:
                     try:
-                        await asyncio.to_thread(self.db.add_history, upd_id, None, upd_text, "UPDATE")
+                        # 二轮审计：async 补齐 created_at（此前落 NULL 排历史时间线置顶，
+                        # 与 sync 传 now 的行为对齐）
+                        await asyncio.to_thread(
+                            self.db.add_history, upd_id, None, upd_text, "UPDATE",
+                            created_at=datetime.now(timezone.utc).isoformat(),
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to log UPDATE history for {upd_id}: {e}")
             except Exception as e:

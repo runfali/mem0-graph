@@ -97,22 +97,37 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
     """Create the first admin account. Blocked once any user exists."""
     _require_password_length(body.password)
 
-    if db.scalar(select(func.count(User.id))) > 0:
-        raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
+    # 二轮审计：count 检查与 INSERT 间的 check-then-act 竞态可并发建出第二个
+    # admin（不同 email 时唯一约束不兜底）——改为原子 INSERT...WHERE NOT EXISTS
+    import sqlalchemy as _sa
 
-    user = User(
-        name=body.name,
-        email=body.email,
-        password_hash=hash_password(body.password),
-        role="admin",
+    result = db.execute(
+        _sa.insert(User)
+        .from_select(
+            [
+                User.name,
+                User.email,
+                User.password_hash,
+                User.role,
+            ],
+            _sa.select(
+                _sa.literal(body.name),
+                _sa.literal(body.email),
+                _sa.literal(hash_password(body.password)),
+                _sa.literal("admin"),
+            ).where(_sa.not_(_sa.select(User.id).exists())),
+        )
+        .returning(User.id)
     )
-    db.add(user)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
-    db.refresh(user)
+    row = result.fetchone()
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
 
     capture_admin_registered(email=body.email)
 
