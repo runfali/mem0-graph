@@ -842,3 +842,15 @@ def reset_memory(_auth=Depends(require_admin)):
 def home():
     """Redirect to the OpenAPI documentation."""
     return RedirectResponse(url="/docs")
+
+
+@app.get("/v1/ping", include_in_schema=False)
+def v1_ping():
+    """MemoryClient 构造期探活兼容端点（二轮审计 fix proxy 契约）。
+
+    MemoryClient.__init__ 先 GET /v1/ping/ 验证 API key 通路；本 server 用
+    自有认证体系，该端点只做可达性探活（无敏感信息），有意豁免鉴权。
+    /v3/* 等托管形状端点未实现——proxy 的 MemoryClient 分支仅保证不炸，
+    完整托管兼容面不在本仓库范围。
+    """
+    return {"message": "ok"}

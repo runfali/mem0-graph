@@ -187,5 +187,9 @@ class Completions:
             if relevant_memories.get("relations"):
                 entities = [entity for entity in relevant_memories["relations"]]
         elif isinstance(self.mem0_client, mem0.client.main.MemoryClient):
-            memories_text = "\n".join(memory["memory"] for memory in relevant_memories)
+            # 二轮审计：MemoryClient.search 返回 {"results": [...]} 字典——
+            # 直接迭代会把键 'results' 当成记忆条目导致 TypeError
+            memories_text = "\n".join(
+                memory["memory"] for memory in (relevant_memories.get("results") or [])
+            )
         return f"- Relevant Memories/Facts: {memories_text}\n\n- Entities: {entities}\n\n- User Question: {messages[-1]['content']}"
