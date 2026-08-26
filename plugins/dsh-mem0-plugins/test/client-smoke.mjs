@@ -137,11 +137,18 @@ exportsRef.apply(ctx)
 const dict = registeredLocales.get('mem0')
 assert.ok(dict, 'locale 词典已注册'); ok('locale[mem0] 注册')
 assert.ok(dict.zh['card.title'] && dict.en['card.title']); ok('zh/en 卡片标题齐备')
-for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'forceRecallStep', 'topK', 'rerank', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs', 'feedbackEnabled']) {
+for (const key of ['enabled', 'host', 'apiKey', 'userId', 'agentId', 'forceRecallStep', 'topK', 'rerank', 'distillEnabled', 'distillMinChars', 'distillInputMaxChars', 'distillBaseUrl', 'distillApiKey', 'distillModel', 'distillTimeoutMs', 'distillRetryAfterMs', 'syncEnabled', 'coalesceEnabled', 'coalesceIdleMs', 'coalesceWindowMs', 'coalesceMaxTurns', 'coalesceMaxChars', 'fastpathChars', 'queueMaxLen', 'breakerThreshold', 'breakerCooldownMs', 'requestTimeoutMs', 'feedbackEnabled', 'outputMaxLines', 'outputMaxKb', 'itemMaxChars']) {
   assert.ok(dict.zh['field.' + key], '缺少 field.' + key)
   assert.ok(dict.zh['hint.' + key], '缺少 hint.' + key)
 }
-ok('28 个字段的 label/hint 文案全覆盖')
+ok('31 个字段的 label/hint 文案全覆盖')
+// 工具输出硬化三键（2026-08-26）：host schema/spec/client FIELDS/翻译键四处同步
+// 的最后一环——漏加翻译键时设置页显示英文键名（dsh-skill-curator 同类教训）
+for (const key of ['outputMaxLines', 'outputMaxKb', 'itemMaxChars']) {
+  assert.ok(dict.zh['field.' + key] && dict.zh['hint.' + key], '输出硬化键缺中文文案: ' + key)
+}
+assert.ok(dict.zh['group.output'], '缺少 group.output 分组标题')
+ok('输出硬化三键中文 label/hint + 分组标题齐备')
 
 assert.equal(slotRegistrations.length, 1); ok('settings.plugin.item 槽位注册 ×1')
 const { def, component } = slotRegistrations[0].reg
