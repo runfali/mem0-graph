@@ -119,21 +119,25 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
         )
         .returning(User.id)
     )
+    # 三轮审计：必须先消费 RETURNING 结果再 commit——sqlite 在未取回结果时
+    # commit 抛 "cannot commit transaction - SQL statements in progress"
+    row = result.fetchone()
+    if row is None:
+        db.rollback()
+        raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
-    row = result.fetchone()
-    if row is None:
-        db.rollback()
-        raise HTTPException(status_code=403, detail="Registration is closed. An admin account already exists.")
+    # 三轮审计：旧代码的 user 变量已被 from_select 重构删除，此处改用返回行
+    user_id = str(row[0])
 
     capture_admin_registered(email=body.email)
 
     return TokenResponse(
-        access_token=create_access_token(str(user.id), user.role),
-        refresh_token=create_refresh_token(str(user.id), db),
+        access_token=create_access_token(user_id, "admin"),
+        refresh_token=create_refresh_token(user_id, db),
     )
 
 

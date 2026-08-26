@@ -289,3 +289,37 @@ def test_feedback_savepoint_conflict_does_not_500(client):
     # 端点级：已有行时 feedback 正常 200 且分数累计（非 500）
     resp = _post(client, memory_id="svp-1", feedback_type="useful")
     assert resp.status_code == 200
+
+
+def test_feedback_update_round_compiles_as_numeric_for_pg():
+    """三轮审计：PG 无 round(double precision, integer) 重载。
+
+    salience_score 是 Float 列（PG double precision），CASE 表达式必须显式
+    cast 成 Numeric 后 round——否则 PG 执行期 UndefinedFunction（sqlite 的
+    round(REAL, int) 存在，测试环境掩盖）。此用例在 postgresql 方言下编译
+    UPDATE SQL 并断言 round 参数为 numeric 类型，锁死该契约。
+    """
+    from sqlalchemy import case, func, update
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.types import Numeric
+
+    from models import EvolveSalience
+
+    delta = 0.1
+    stmt = (
+        update(EvolveSalience)
+        .where(EvolveSalience.memory_id == "x")
+        .values(
+            salience_score=func.round(
+                case(
+                    (EvolveSalience.salience_score + delta > 1.0, 1.0),
+                    (EvolveSalience.salience_score + delta < 0.05, 0.05),
+                    else_=EvolveSalience.salience_score + delta,
+                ).cast(Numeric),
+                4,
+            )
+        )
+    )
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    # round(CAST(... AS NUMERIC), 4) —— PG round(numeric, int) 存在
+    assert "CAST" in sql.upper() and "NUMERIC" in sql.upper(), sql

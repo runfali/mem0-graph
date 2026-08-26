@@ -845,6 +845,7 @@ def home():
 
 
 @app.get("/v1/ping", include_in_schema=False)
+@app.get("/v1/ping/", include_in_schema=False)
 def v1_ping():
     """MemoryClient 构造期探活兼容端点（二轮审计 fix proxy 契约）。
 

@@ -168,13 +168,19 @@ class Completions:
     def _fetch_relevant_memories(self, messages, user_id, agent_id, run_id, filters, top_k):
         # Currently, only pass the last 6 messages to the search API to prevent long query
         message_input = [f"{message['role']}: {message['content']}" for message in messages][-6:]
-        # TODO: Make it better by summarizing the past conversation
+        # 三轮审计：MemoryClient.search 拒收顶层 user_id/agent_id/run_id
+        # （ENTITY_PARAMS 校验），实体参数必须归入 filters——否则任意非空
+        # 实体参数都让 search 入口直接 ValueError
+        merged_filters = dict(filters or {})
+        if user_id:
+            merged_filters["user_id"] = user_id
+        if agent_id:
+            merged_filters["agent_id"] = agent_id
+        if run_id:
+            merged_filters["run_id"] = run_id
         return self.mem0_client.search(
             query="\n".join(message_input),
-            user_id=user_id,
-            agent_id=agent_id,
-            run_id=run_id,
-            filters=filters,
+            filters=merged_filters,
             top_k=top_k,
         )
 

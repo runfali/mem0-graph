@@ -14,7 +14,7 @@ from models import (
 )
 from pydantic import BaseModel
 from server_state import get_current_config
-from sqlalchemy import ColumnElement, String, and_, case, column, func, or_, select, table, text, update
+from sqlalchemy import ColumnElement, Numeric, String, and_, case, column, func, or_, select, table, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -152,24 +152,33 @@ def submit_feedback(
         # 后到者覆盖先者累加（delta 静默丢失）。改 UPDATE 内置读-改-写原子累加
         # （clamp 在 SQL 表达式内），并发双方各自正确累加。
         delta = DELTAS[body.feedback_type]
+        # 三轮审计（生产实测 500）：PG 无 round(double precision, integer)
+        # 重载——Float 列参与 CASE 后是 float8，必须 cast 成 Numeric 才能用
+        # round(numeric, 4)；sqlite 的 round(REAL, int) 存在，测试全绿掩盖。
         new_score = db.execute(
             update(EvolveSalience)
             .where(EvolveSalience.memory_id == body.memory_id)
             .values(
-                # clamp 用 CASE WHEN 而非 least/greatest：SQLite 旧版无这两函数，
-                # 生产 PG 与测试 sqlite 需同一套 SQL 语义
                 salience_score=func.round(
                     case(
                         (EvolveSalience.salience_score + delta > MAX_SCORE, MAX_SCORE),
                         (EvolveSalience.salience_score + delta < MIN_SCORE, MIN_SCORE),
                         else_=EvolveSalience.salience_score + delta,
-                    ),
+                    ).cast(Numeric),
                     4,
                 ),
                 updated_at=now,
             )
             .returning(EvolveSalience.salience_score)
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if new_score is None:
+            # 行在读取与 UPDATE 之间被并发删除（记忆删除会清理 salience 行）：
+            # 回滚本轮反馈，避免以 500 结束
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Memory no longer tracked.")
+        # PG 下 round(numeric, 4) 返回 Decimal，与 Float 列 ORM 读出的 float
+        # 混合运算会 TypeError（sqlite 返回 REAL 掩盖）——显式转 float
+        new_score = float(new_score)
 
     applied_delta = round(new_score - old_score, 4)
     db.add(

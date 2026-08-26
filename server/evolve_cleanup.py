@@ -49,12 +49,17 @@ def build_session_factory(config: Dict[str, Any]) -> Callable:
     process and have no access to the API server's session factory.
     """
     vs_config = (config or {}).get("vector_store", {}).get("config", {})
+    # 三轮审计：凭据必须 URL 编码（与 server/db.py 的 quote_plus 对齐）——
+    # 密码含 @ : / % 等特殊字符时裸拼接会破坏连接串解析，主服务正常而
+    # 维护脚本静默连错库
+    from urllib.parse import quote_plus
+
     url = "postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}".format(
-        user=vs_config.get("user", "postgres"),
-        password=vs_config.get("password", "postgres"),
+        user=quote_plus(vs_config.get("user", "postgres")),
+        password=quote_plus(vs_config.get("password", "postgres")),
         host=vs_config.get("host", "postgres"),
         port=vs_config.get("port", "5432"),
-        dbname=vs_config.get("dbname", "postgres"),
+        dbname=quote_plus(vs_config.get("dbname", "postgres")),
     )
     engine = create_engine(url, pool_pre_ping=True)
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

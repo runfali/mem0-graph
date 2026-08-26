@@ -3149,6 +3149,9 @@ class Memory(MemoryBase):
         payload = existing_memory.payload or {}
         session_filters = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
         self.vector_store.delete(vector_id=memory_id)
+        # 三轮审计：删除完成后失效搜索缓存——入口 clear 与删除执行间有窗口，
+        # 并发 search 可能已重填缓存导致 TTL 内返回已删记忆（与 update 操作后失效对齐）
+        self._search_depth_cache.clear()
         self.db.add_history(
             memory_id,
             prev_value,
@@ -5545,6 +5548,8 @@ class AsyncMemory(MemoryBase):
         session_filters = {k: payload[k] for k in ("user_id", "agent_id", "run_id") if payload.get(k)}
 
         await asyncio.to_thread(self.vector_store.delete, vector_id=memory_id)
+        # 三轮审计：同 sync 版，删除完成后失效搜索缓存
+        self._search_depth_cache.clear()
         await asyncio.to_thread(
             self.db.add_history,
             memory_id,
