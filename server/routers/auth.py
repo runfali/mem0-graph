@@ -97,8 +97,11 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
     """Create the first admin account. Blocked once any user exists."""
     _require_password_length(body.password)
 
-    # 二轮审计：count 检查与 INSERT 间的 check-then-act 竞态可并发建出第二个
-    # admin（不同 email 时唯一约束不兜底）——改为原子 INSERT...WHERE NOT EXISTS
+    # 四轮审计：INSERT...SELECT WHERE NOT EXISTS 在 PG READ COMMITTED 下并非
+    # 真原子（语句快照看不到并发未提交行）——并发不同 email 仍可双插入；
+    # 真正的单 admin 兜底是迁移 004 的 partial unique index
+    # （ix_users_only_one_admin，role='admin' 单例），第二个 admin 插入被阻塞
+    # → IntegrityError → 403。models.py 已等价声明该索引（测试环境同构）。
     import sqlalchemy as _sa
 
     result = db.execute(

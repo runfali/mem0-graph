@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db import Base
@@ -17,6 +17,18 @@ def _new_uuid() -> uuid.UUID:
 
 class User(Base):
     __tablename__ = "users"
+    # 四轮审计：等价声明迁移 004 的 partial unique index（role='admin' 单例约束）。
+    # register 的 INSERT...SELECT WHERE NOT EXISTS 在 PG READ COMMITTED 下非真原子，
+    # 生产真正的并发兜底是这条索引（第二个 admin 插入被阻塞 → IntegrityError→403）；
+    # 在 models 声明让 sqlite create_all 测试环境与生产 schema 同构。
+    __table_args__ = (
+        Index(
+            "ix_users_only_one_admin",
+            "role",
+            unique=True,
+            postgresql_where=text("role = 'admin'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_new_uuid)
     name: Mapped[str] = mapped_column(String(255))

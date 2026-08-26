@@ -25,9 +25,13 @@ from routers.auth import router as auth_router  # noqa: E402
 
 
 @pytest.fixture
-def client():
+def client(tmp_path):
+    # 四轮审计：并发用例需要 file 库（:memory: + StaticPool 单连接会被多线程
+    # 串扰），QueuePool 每线程独立连接 + busy timeout 兜底 sqlite 文件锁
+    db_path = tmp_path / "register_test.db"
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
     Base.metadata.create_all(engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -68,3 +72,29 @@ def test_register_second_admin_rejected(client):
         json={"name": "b", "email": "b@test.dev", "password": "StrongPass123"},
     )
     assert resp.status_code == 403
+
+
+def test_concurrent_register_only_one_admin_wins(client):
+    """四轮审计：并发首注册只有一方成功（同 role 的 unique 索引兜底）。"""
+    import threading
+
+    results = []
+
+    def do_register(email):
+        resp = client.post(
+            "/auth/register",
+            json={"name": "u", "email": email, "password": "StrongPass123"},
+        )
+        results.append(resp.status_code)
+
+    threads = [
+        threading.Thread(target=do_register, args=(f"c{i}@test.dev",)) for i in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 2, results
+    assert results.count(200) == 1, results
+    assert results.count(403) == 1, results
