@@ -561,7 +561,13 @@ def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
     overrides layer is no longer written. Restart the container to apply.
     """
     _validate_bundled_providers(config)
-    update_config(config)
+    try:
+        update_config(config)
+    except OSError:
+        # 持久化失败必须返回带 CORS 头的干净 JSON 500——裸异常会穿透到最外层
+        # 错误中间件，响应无 Access-Control-Allow-Origin，浏览器把它误报成 CORS 问题。
+        logging.exception("Failed to persist config.json")
+        raise HTTPException(status_code=500, detail="Failed to persist configuration to config.json.")
     return {"message": "Configuration saved to config.json. Restart the container to apply."}
 
 

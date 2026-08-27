@@ -193,7 +193,16 @@ def _save_config_file(path: str, config: Dict[str, Any]) -> None:
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
+    try:
+        # 原子替换优先；但 path 若是单文件 bind-mount 的挂载点（docker-compose
+        # 常见形态 config.json -> /app/config.json），rename 无法穿越挂载边界，
+        # 必然 OSError EBUSY——此时回退为同 inode 直接覆写，宿主侧同步可见。
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        logging.warning("os.replace failed for %s (%s), falling back to in-place write", path, exc)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        os.remove(tmp_path)
 
 
 def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:

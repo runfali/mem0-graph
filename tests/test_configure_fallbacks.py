@@ -252,3 +252,47 @@ class TestConfigurePersistsToConfigFile:
         with pytest.raises(OSError):
             self.server_state.update_config({"llm": {"provider": "openai"}})
         assert self.server_state.get_current_config() == before
+
+
+class TestSaveConfigFileMountFallback:
+    """单文件 bind-mount 场景（config.json -> /app/config.json）：
+
+    os.replace 跨挂载边界必然 EBUSY，必须回退同 inode 直写，避免保存配置 500。
+    回归 2026-08-27 dashboard 保存配置报 CORS+500 的真实故障。
+    """
+
+    def test_replace_ebusy_falls_back_to_in_place_write(self, tmp_path):
+        import json as _json
+
+        import server_state
+
+        path = tmp_path / "config.json"
+        path.write_text(_json.dumps({"llm": {"provider": "openai"}}), encoding="utf-8")
+        ino_before = path.stat().st_ino
+
+        real_replace = os.replace
+
+        def fake_replace(src, dst):
+            if str(dst) == str(path):
+                raise OSError(16, "Device or resource busy")
+            return real_replace(src, dst)
+
+        new_config = {"llm": {"provider": "anthropic"}, "embedder": {"provider": "openai"}}
+        with patch("server_state.os.replace", side_effect=fake_replace):
+            server_state._save_config_file(str(path), new_config)  # 不应抛异常
+
+        assert _json.loads(path.read_text(encoding="utf-8")) == new_config
+        assert path.stat().st_ino == ino_before  # 同 inode 覆写
+        assert not os.path.exists(f"{path}.tmp")  # 残留 tmp 已清理
+
+    def test_corrupt_mounted_config_is_healed_on_save(self, tmp_path):
+        # 线上实况：挂载文件与源码目录同名文件互绑后历史写入全失败，
+        # 挂载侧可能残留损坏 JSON；保存成功即自愈为合法 JSON。
+        import json as _json
+
+        import server_state
+
+        path = tmp_path / "config.json"
+        path.write_text("{}", encoding="utf-8")  # 合法但空——读侧 get() 容忍缺键
+        server_state._save_config_file(str(path), {"llm": {"provider": "openai"}})
+        assert list(_json.loads(path.read_text(encoding="utf-8"))) == ["llm"]
