@@ -60,6 +60,7 @@ from mem0.memory.temporal_intent import detect_temporal_intent, effective_date, 
 from mem0.memory.utils import (
     _estimate_tokens,
     extract_json,
+    parse_extraction_json,
     parse_messages,
     parse_vision_messages,
     process_telemetry_filters,
@@ -1420,7 +1421,8 @@ class Memory(MemoryBase):
                             "resp_head=%s | resp_tail=%s",
                             _ci, je, _resp[:300], _resp[-300:],
                         )
-                        _chunk_mems = json.loads(extract_json(_resp), strict=False).get("memory", [])
+                        # 分层抢救，损坏块保留可解析前缀
+                        _chunk_mems = parse_extraction_json(_resp)
                     accumulated_memories.extend(_chunk_mems)
                 logger.info(f"Chunk {_ci+1}/{len(_chunks)}: extracted {len(accumulated_memories)} memories so far")
             extracted_memories = accumulated_memories
@@ -1459,16 +1461,16 @@ class Memory(MemoryBase):
                             "response_head=%s | response_tail=%s",
                             je, response[:500], response[-500:],
                         )
-                        extracted_json = extract_json(response)
-                        try:
-                            extracted_memories = json.loads(extracted_json, strict=False).get("memory", [])
-                        except json.JSONDecodeError as je2:
-                            logger.error(
-                                "JSON parse failed after extract_json: %s | "
-                                "extracted_head=%s | extracted_tail=%s",
-                                je2, extracted_json[:500], extracted_json[-500:],
+                        # 分层抢救（剥尾逗号→元素级前缀），不再因中段损坏整单报废
+                        extracted_memories = parse_extraction_json(response)
+                        if extracted_memories:
+                            logger.warning(
+                                "Salvaged %d/%d-complete memory items from malformed extraction JSON",
+                                len(extracted_memories),
+                                len(extracted_memories) + 1,
                             )
-                            extracted_memories = []
+                        else:
+                            logger.error("Extraction JSON unrecoverable; dropping this batch")
             except Exception as e:
                 logger.error(f"Error parsing extraction response: {e}")
                 extracted_memories = []
@@ -3785,7 +3787,8 @@ class AsyncMemory(MemoryBase):
                             "resp_head=%s | resp_tail=%s",
                             _ci, je, _resp[:300], _resp[-300:],
                         )
-                        _chunk_mems = json.loads(extract_json(_resp), strict=False).get("memory", [])
+                        # 分层抢救，损坏块保留可解析前缀
+                        _chunk_mems = parse_extraction_json(_resp)
                     accumulated_memories.extend(_chunk_mems)
                 logger.info(f"Chunk {_ci+1}/{len(_chunks)}: extracted {len(accumulated_memories)} memories so far (async)")
             extracted_memories = accumulated_memories
@@ -3824,16 +3827,15 @@ class AsyncMemory(MemoryBase):
                             "response_head=%s | response_tail=%s",
                             je, response[:500], response[-500:],
                         )
-                        extracted_json = extract_json(response)
-                        try:
-                            extracted_memories = json.loads(extracted_json, strict=False).get("memory", [])
-                        except json.JSONDecodeError as je2:
-                            logger.error(
-                                "JSON parse failed after extract_json (async): %s | "
-                                "extracted_head=%s | extracted_tail=%s",
-                                je2, extracted_json[:500], extracted_json[-500:],
+                        # 分层抢救（剥尾逗号→元素级前缀），不再因中段损坏整单报废
+                        extracted_memories = parse_extraction_json(response)
+                        if extracted_memories:
+                            logger.warning(
+                                "Salvaged %d memory items from malformed extraction JSON (async)",
+                                len(extracted_memories),
                             )
-                            extracted_memories = []
+                        else:
+                            logger.error("Extraction JSON unrecoverable; dropping this batch (async)")
             except Exception as e:
                 logger.error(f"Error parsing extraction response (async): {e}")
                 extracted_memories = []

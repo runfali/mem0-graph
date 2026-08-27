@@ -187,6 +187,63 @@ def extract_json(text):
     return json_str
 
 
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_MEMORY_ARRAY_START_RE = re.compile(r'"memory"\s*:\s*\[')
+
+
+def parse_extraction_json(text: str) -> list:
+    """Parse an extraction response into the `memory` item list, with layered salvage.
+
+    LLM 输出常见两类损坏（截断、尾逗号），整篇解析失败时原实现直接丢掉全部
+    结果。此函数按代价递增分层抢救：
+    1. 常规整体解析；
+    2. 剥尾逗号后重试（尾逗号不会出现在合法 JSON 里，且此处仅在正常
+       解析已失败后才执行，字符串内容误伤风险可接受）；
+    3. 元素级前缀抢救：从 memory 数组起点逐个 raw_decode，损坏点之后的
+       半截对象丢弃，之前所有完整对象保留。
+    返回 memory 条目列表；输入完全不可救时返回 []。
+    """
+    import json as _json
+
+    def _items(parsed: dict) -> list:
+        mem = parsed.get("memory", []) if isinstance(parsed, dict) else []
+        return mem if isinstance(mem, list) else []
+
+    # 1) direct
+    try:
+        return _items(_json.loads(text, strict=False))
+    except (ValueError, TypeError):
+        pass
+
+    cleaned = remove_code_blocks(str(text)) or ""
+
+    # 2) strip trailing commas
+    try:
+        return _items(_json.loads(_TRAILING_COMMA_RE.sub(r"\1", cleaned), strict=False))
+    except (ValueError, TypeError):
+        pass
+
+    # 3) element-by-element prefix salvage
+    m = _MEMORY_ARRAY_START_RE.search(cleaned)
+    if not m:
+        return []
+    decoder = _json.JSONDecoder(strict=False)
+    idx, items = m.end(), []
+    n = len(cleaned)
+    while idx < n:
+        while idx < n and cleaned[idx] in " \t\r\n,":
+            idx += 1
+        if idx >= n or cleaned[idx] != "{":
+            break  # 结束符/垃圾——抢救到此为止
+        try:
+            obj, end = decoder.raw_decode(cleaned, idx)
+        except ValueError:
+            break  # 损坏/被截断的半截对象
+        items.append(obj)
+        idx = end
+    return items
+
+
 def get_image_description(image_obj, llm, vision_details):
     """
     Get the description of the image
