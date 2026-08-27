@@ -254,6 +254,64 @@ class TestConfigurePersistsToConfigFile:
         assert self.server_state.get_current_config() == before
 
 
+class TestBuildFirstAtomicConfig:
+    """Build-first 全有或全无：非法配置在实例构建期整单拒绝。
+
+    回归 2026-08-27 真实故障：fallback[1] 缺 api_key 时 OpenAIError 在
+    Memory.from_config 重建阶段才炸，而旧实现此刻磁盘已写——出现
+    「config.json 是新值、运行实例仍旧值」的半提交，前端提示保存成功
+    但 LLM 依旧走旧 fallback。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _mock_memory, tmp_path):
+        import server_state
+
+        self.mock_instance, self.mock_save_config = _mock_memory
+        self.server_state = server_state
+        self.server_main = _load_app(
+            {"ADMIN_API_KEY": "", "MEM0_CONFIG_PATH": str(tmp_path / "config.json")}
+        )
+        self.client = TestClient(self.server_main.app)
+
+    def test_invalid_provider_config_rejected_without_half_commit(self):
+        from openai import OpenAIError
+
+        before_config = self.server_state.get_current_config()
+        calls = {"n": 0}
+
+        def boom(config):
+            calls["n"] += 1
+            if calls["n"] == 2:  # 第二个 fallback 构建时炸
+                raise OpenAIError("Missing credentials")
+
+        with patch("server_state.Memory.from_config", side_effect=boom):
+            resp = self.client.post(
+                "/configure",
+                json={"llm": {"fallbacks": [
+                    {"provider": "openai", "config": {"api_key": "sk-a"}},
+                    {"provider": "openai", "config": {}},  # 缺 key
+                ]}},
+            )
+        assert resp.status_code == 400
+        assert "Invalid configuration" in resp.json()["detail"]
+        # 半提交三断言：盘未写、内存未变、保存函数未被调
+        self.mock_save_config.assert_not_called()
+        assert self.server_state.get_current_config() == before_config
+
+    def test_success_path_still_writes_and_switches(self):
+        resp = self.client.post("/configure", json={"llm": {"provider": "openai"}})
+        assert resp.status_code == 200
+        self.mock_save_config.assert_called_once()
+
+    def test_persist_failure_returns_500_with_json_detail(self):
+        # OSError（挂载点 EBUSY 等）必须走 500 JSON 分支而非裸穿透
+        with patch("server_state._save_config_file", side_effect=OSError(16, "busy")):
+            resp = self.client.post("/configure", json={"llm": {"provider": "anthropic"}})
+        assert resp.status_code == 500
+        assert "persist" in resp.json()["detail"]
+
+
 class TestSaveConfigFileMountFallback:
     """单文件 bind-mount 场景（config.json -> /app/config.json）：
 

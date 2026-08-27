@@ -209,13 +209,17 @@ def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     global _current_config, _memory_instance
     with _state_lock:
         next_config = _merge_config(_current_config, updates)
-        _save_config_file(_config_file_path(), next_config)
-        _current_config = next_config
-        _memory_instance = _attach_memory_added_cleanup(
+        # Build-first 全有或全无：先用新配置把 Memory 实例建出来，配置非法
+        # （如 fallback 缺 api_key）在此处抛出、磁盘与内存均不动；先写盘后重建
+        # 会出现「config.json 已是新值而运行实例仍旧值」的半提交态。
+        next_instance = _attach_memory_added_cleanup(
             _attach_delete_cleanup(
                 _attach_salience_provider(Memory.from_config(next_config))
             )
         )
+        _save_config_file(_config_file_path(), next_config)
+        _current_config = next_config
+        _memory_instance = next_instance
         return deepcopy(_current_config)
 
 

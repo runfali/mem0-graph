@@ -564,11 +564,16 @@ def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
     _validate_bundled_providers(config)
     try:
         update_config(config)
-    except OSError:
-        # 持久化失败必须返回带 CORS 头的干净 JSON 500——裸异常会穿透到最外层
-        # 错误中间件，响应无 Access-Control-Allow-Origin，浏览器把它误报成 CORS 问题。
-        logging.exception("Failed to persist config.json")
-        raise HTTPException(status_code=500, detail="Failed to persist configuration to config.json.")
+    except Exception as e:
+        # Build-first：配置非法（如 fallback 缺 api_key 致 OpenAIError）时
+        # Memory 实例建不出来，整单拒绝——磁盘与运行实例均未动。供应商 SDK
+        # 抛的异常类型各异（OpenAIError/ValueError/...），统一按用户输入问题
+        # 返回可读 400，不再裸穿透成假 CORS 500。
+        if isinstance(e, OSError):
+            # 持久化失败属服务端问题：返回带 CORS 头的干净 JSON 500。
+            logging.exception("Failed to persist config.json")
+            raise HTTPException(status_code=500, detail="Failed to persist configuration to config.json.")
+        raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
     return {"message": "Configuration saved to config.json and applied immediately."}
 
 
