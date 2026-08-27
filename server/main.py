@@ -557,8 +557,9 @@ def list_bundled_providers(_auth=Depends(verify_auth)):
 def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
     """Set memory configuration. Requires admin role.
 
-    Persists atomically to config.json (the authoritative source); the DB
-    overrides layer is no longer written. Restart the container to apply.
+    Persists to config.json (the authoritative source); the DB overrides
+    layer is no longer written. The in-memory instance is rebuilt with the
+    new config immediately — no container restart needed.
     """
     _validate_bundled_providers(config)
     try:
@@ -568,7 +569,7 @@ def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
         # 错误中间件，响应无 Access-Control-Allow-Origin，浏览器把它误报成 CORS 问题。
         logging.exception("Failed to persist config.json")
         raise HTTPException(status_code=500, detail="Failed to persist configuration to config.json.")
-    return {"message": "Configuration saved to config.json. Restart the container to apply."}
+    return {"message": "Configuration saved to config.json and applied immediately."}
 
 
 @app.post("/generate-instructions", summary="Generate custom instructions from a use case")
