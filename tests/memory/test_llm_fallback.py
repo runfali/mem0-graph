@@ -276,3 +276,53 @@ def test_build_llm_returns_primary_when_no_fallbacks(monkeypatch):
 
     assert not isinstance(llm, FallbackLLM)
     assert len(created) == 1
+
+
+def test_build_llm_fallbacks_inherit_sampling_params(monkeypatch):
+    """兜底层缺省 temperature/max_tokens 时继承主层（config.json/env/dashboard 三路共用此修复）。"""
+    captured = []
+
+    def fake_create(provider, config, **kwargs):
+        captured.append(dict(config or {}))
+        return MockLLM(result=provider)
+
+    monkeypatch.setattr(memory_main.LlmFactory, "create", staticmethod(fake_create))
+    cfg = LlmConfig(
+        provider="openai",
+        config={"model": "main", "temperature": 0.1, "max_tokens": 8192},
+        fallbacks=[
+            LlmConfig(provider="openai", config={"model": "fb-missing"}),
+            LlmConfig(provider="anthropic", config={"model": "fb-explicit", "max_tokens": 1024}),
+        ],
+    )
+
+    llm = memory_main._build_llm(cfg)
+
+    assert isinstance(llm, FallbackLLM)
+    assert captured[1]["temperature"] == 0.1 and captured[1]["max_tokens"] == 8192  # 继承
+    assert captured[2]["max_tokens"] == 1024 and captured[2]["temperature"] == 0.1  # 显式优先、缺的键仍继承
+
+
+def test_build_llm_skips_inheritance_when_primary_lacks_keys(monkeypatch):
+    """主层自身缺 temperature/max_tokens（或值为 None）→ 兜底层不注入、不炸。"""
+    captured = []
+
+    def fake_create(provider, config, **kwargs):
+        captured.append(dict(config or {}))
+        return MockLLM(result=provider)
+
+    monkeypatch.setattr(memory_main.LlmFactory, "create", staticmethod(fake_create))
+    cfg = LlmConfig(
+        provider="openai",
+        config={"model": "main"},
+        fallbacks=[
+            LlmConfig(provider="deepseek", config={"model": "fb1"}),
+            LlmConfig(provider="openai", config={"model": "fb2", "temperature": None}),
+        ],
+    )
+
+    llm = memory_main._build_llm(cfg)
+
+    assert isinstance(llm, FallbackLLM)
+    assert "temperature" not in captured[1] and "max_tokens" not in captured[1]
+    assert "temperature" not in captured[2] and "max_tokens" not in captured[2]

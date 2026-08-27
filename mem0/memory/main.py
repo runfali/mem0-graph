@@ -831,7 +831,21 @@ def _build_llm(llm_config):
     primary = LlmFactory.create(llm_config.provider, llm_config.config)
     if not llm_config.fallbacks:
         return primary
-    fallbacks = [LlmFactory.create(fb.provider, fb.config) for fb in llm_config.fallbacks]
+    # 采样/输出参数兜底层显式配置优先，缺省继承主层，避免切层后 max_tokens 骤降库默认 2000 触发截断
+    inherit_keys = ("temperature", "max_tokens")
+    primary_cfg = llm_config.config or {}
+    fallbacks = []
+    for fb in llm_config.fallbacks:
+        fb_cfg = dict(fb.config or {})
+        for key in inherit_keys:
+            if fb_cfg.get(key) is not None:
+                continue
+            inherited = primary_cfg.get(key)
+            if inherited is not None:
+                fb_cfg[key] = inherited
+            else:
+                fb_cfg.pop(key, None)  # 主层也没有：剥掉显式 None，回落库默认
+        fallbacks.append(LlmFactory.create(fb.provider, fb_cfg))
     return FallbackLLM(primary, fallbacks, layer_timeout=llm_config.layer_timeout)
 
 
