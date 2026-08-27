@@ -278,14 +278,15 @@ class TestBuildFirstAtomicConfig:
         from openai import OpenAIError
 
         before_config = self.server_state.get_current_config()
-        calls = {"n": 0}
 
-        def boom(config):
-            calls["n"] += 1
-            if calls["n"] == 2:  # 第二个 fallback 构建时炸
-                raise OpenAIError("Missing credentials")
-
-        with patch("server_state.Memory.from_config", side_effect=boom):
+        # 用 OpenAIError 本身（而非任意异常）钉住分类契约：
+        # 供应商 SDK 异常按用户输入问题返回可读 400。
+        # update_config 只调一次 Memory.from_config（fallback 的逐层构建在其
+        # 内部 LlmFactory 完成，桩点在这里不可达）——所以在重建边界整单炸。
+        with patch(
+            "server_state.Memory.from_config",
+            side_effect=OpenAIError("Missing credentials"),
+        ):
             resp = self.client.post(
                 "/configure",
                 json={"llm": {"fallbacks": [
@@ -294,6 +295,7 @@ class TestBuildFirstAtomicConfig:
                 ]}},
             )
         assert resp.status_code == 400
+        assert "Invalid configuration" in resp.json()["detail"]
         assert "Invalid configuration" in resp.json()["detail"]
         # 半提交三断言：盘未写、内存未变、保存函数未被调
         self.mock_save_config.assert_not_called()

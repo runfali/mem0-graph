@@ -573,6 +573,8 @@ def set_config(config: Dict[str, Any], _auth=Depends(require_admin)):
             # 持久化失败属服务端问题：返回带 CORS 头的干净 JSON 500。
             logging.exception("Failed to persist config.json")
             raise HTTPException(status_code=500, detail="Failed to persist configuration to config.json.")
+        # 重建拒绝也要留服务端日志：400 只在客户端可见，运维侧需要证据链。
+        logging.warning("Configuration rejected during rebuild: %s: %s", type(e).__name__, e)
         raise HTTPException(status_code=400, detail=f"Invalid configuration: {e}")
     return {"message": "Configuration saved to config.json and applied immediately."}
 

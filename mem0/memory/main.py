@@ -59,7 +59,6 @@ from mem0.memory.telemetry import MEM0_TELEMETRY, capture_event
 from mem0.memory.temporal_intent import detect_temporal_intent, effective_date, intent_to_range
 from mem0.memory.utils import (
     _estimate_tokens,
-    extract_json,
     parse_extraction_json,
     parse_messages,
     parse_vision_messages,
@@ -1479,9 +1478,8 @@ class Memory(MemoryBase):
                         extracted_memories = parse_extraction_json(response)
                         if extracted_memories:
                             logger.warning(
-                                "Salvaged %d/%d-complete memory items from malformed extraction JSON",
+                                "Salvaged %d memory items from malformed extraction JSON",
                                 len(extracted_memories),
-                                len(extracted_memories) + 1,
                             )
                         else:
                             logger.error("Extraction JSON unrecoverable; dropping this batch")
