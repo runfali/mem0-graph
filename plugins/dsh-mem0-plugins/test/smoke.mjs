@@ -514,6 +514,16 @@ console.log('== 单元：上传脱敏闸（coalesce 接线）==')
   q.drain()
   assert.equal(q.stats.redacted, 2)
   assert.equal(warns.length, 1); ok('同会话同 label 不重复 warn')
+  // env-block 折叠必须经 route 落地：foldEnvBlocks 的结果靠 hits 非空才会替换文本，
+  // 漏报 hits 时替换被整段丢弃、防线在链路上失效（2026-08-29 审计 P1 回归）
+  const q3 = new C({
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async () => {}, log: {}
+  })
+  q3.enqueue({ userId: 'u', sessionId: 'r3', userContent: 'DB_HOST=localhost\nDB_USER=root\nDB_PASS=secret\nAPP_ENV=prod\nAPP_PORT=8888', assistantContent: '收到' })
+  q3.drain()
+  assert.equal(q3.stats.redacted, 1); ok('env-block 折叠计入 redacted 计数')
+  assert.ok(q3.buckets.get('u\u0000r3').messages[0].content.includes('[REDACTED:env-block]')); ok('env-block 折叠经 route 落桶（hits 上报接线）')
   const q2 = new C({
     resolve: () => ({ enabled: true, redactEnabled: false, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
     addFn: async () => {}, log: {}

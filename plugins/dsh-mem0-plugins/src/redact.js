@@ -62,33 +62,46 @@ const RULES = [
 /** .env 形态判定：KEY=VALUE 行（大写下划线键 + 非空值）。 */
 const ENV_LINE = /^[A-Z][A-Z0-9_]*=.+$/
 
-/** 连续 ≥5 行 .env 形态才视为整文件粘贴（避免误伤散文/代码里的个别赋值行）。 */
+/** .env 段内中性行：空行或 # 注释——不参与计数，也不打断连续段（真实 .env 常夹注释）。 */
+const ENV_NEUTRAL = /^(#.*|\s*)$/
+
+/** 累计 ≥ENV_MIN_LINES 行 .env 形态才视为整文件粘贴（避免误伤散文/代码里的个别赋值行）。 */
 const ENV_MIN_LINES = 5
 
 /**
- * 把文本中连续 ≥ENV_MIN_LINES 行的 .env 块整体折叠为一个占位行。
- * @returns {string} 处理后的文本
+ * 把文本中累计 ≥ENV_MIN_LINES 行（注释/空行夹缝不打断）的 .env 段整体折叠为一个占位行。
+ * @returns {{ text: string, folded: number }} folded=折叠出的 env-block 段数
  */
 function foldEnvBlocks(text) {
   const lines = text.split('\n')
   let out = ''
-  let pending = []
+  let run = []       // 当前段的行（含夹缝中性行，不折叠时需原样回填）
+  let envCount = 0   // 段内 KEY=VALUE 行数（阈值只数它）
+  let folded = 0
   const flush = () => {
-    if (pending.length) {
-      out += (out ? '\n' : '') + (pending.length >= ENV_MIN_LINES ? '[REDACTED:env-block]' : pending.join('\n'))
-      pending = []
+    if (!run.length) return
+    if (envCount >= ENV_MIN_LINES) {
+      out += (out ? '\n' : '') + '[REDACTED:env-block]'
+      folded += 1
+    } else {
+      out += (out ? '\n' : '') + run.join('\n')
     }
+    run = []
+    envCount = 0
   }
   for (const line of lines) {
     if (ENV_LINE.test(line)) {
-      pending.push(line)
+      run.push(line)
+      envCount += 1
+    } else if (run.length && ENV_NEUTRAL.test(line)) {
+      run.push(line)
     } else {
       flush()
       out += (out ? '\n' : '') + line
     }
   }
   flush()
-  return out
+  return { text: out, folded }
 }
 
 /**
@@ -96,11 +109,15 @@ function foldEnvBlocks(text) {
  * @param {string} text
  * @returns {{ text: string, hits: Array<{ label: string, count: number }> }}
  *   text=打码后文本（无命中时与入参同串）；hits=按 label 聚合的命中清单。
+ *   env-block 折叠必须计入 hits——route 以 hits 非空为落替换文本的前提，
+ *   漏报 = 折叠结果被整段丢弃、防线失效（2026-08-29 审计 P1 教训）。
  */
 export function redactSecrets(text) {
   if (typeof text !== 'string' || !text) return { text: text || '', hits: [] }
-  let out = foldEnvBlocks(text)
+  const env = foldEnvBlocks(text)
+  let out = env.text
   const hits = []
+  if (env.folded > 0) hits.push({ label: 'env-block', count: env.folded })
   for (const rule of RULES) {
     out = out.replace(rule.re, (...args) => {
       const replaced = rule.replace(...args)

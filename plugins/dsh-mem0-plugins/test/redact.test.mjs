@@ -64,16 +64,27 @@ test('password: 裸词与引号串都打码，键保留；无 = 的普通词不�
   assert.deepEqual(neg.hits, [])
 })
 
-// ---- .env 块（连续 ≥5 行） ------------------------------------------------------
+// ---- .env 块（KEY=VALUE 累计 ≥5 行；注释/空行夹缝不打断） -----------------------
 
-test('env-block: 连续 5 行 KEY=VALUE 整块折叠；注释打断后 4 行不折叠', () => {
+test('env-block: 连续 5 行 KEY=VALUE 整块折叠并计入 hits', () => {
   const env5 = 'DB_HOST=localhost\nDB_USER=root\nDB_PASS=secret\nAPP_ENV=prod\nAPP_PORT=8888'
   const r = redactSecrets(env5)
   assert.equal(r.text, '[REDACTED:env-block]')
-  const withComment = 'DB_HOST=localhost\nDB_USER=root\nDB_PASS=secret\nAPP_ENV=prod\n# comment line\nAPP_PORT=8888'
-  const neg = redactSecrets(withComment)
-  assert.ok(neg.text.includes('DB_PASS=secret')) // 4 连行 < 5，原样保留
-  assert.deepEqual(neg.hits, [])
+  assert.equal(hitsOf(r, 'env-block'), 1)
+})
+
+test('env-block: 注释/空行夹缝不打断——累计 5 行仍整体折叠（2026-08-29 审计 P2 回归）', () => {
+  const mixed = 'DB_HOST=localhost\nDB_USER=root\nDB_PASS=secret\n# 口令在下一行\nAPP_ENV=prod\n\nAPP_PORT=8888'
+  const r = redactSecrets(mixed)
+  assert.equal(r.text, '[REDACTED:env-block]')
+  assert.equal(r.text.includes('DB_PASS=secret'), false)
+})
+
+test('env-block: 累计 4 行不折叠，原文逐行保留（阈值边界）', () => {
+  const env4 = 'DB_HOST=localhost\nDB_USER=root\n# 注释夹缝\nDB_PASS=secret\nAPP_ENV=prod'
+  const r = redactSecrets(env4)
+  assert.equal(r.text, env4)
+  assert.deepEqual(r.hits, [])
 })
 
 // ---- 组合与边界 ----------------------------------------------------------------
