@@ -249,8 +249,19 @@ export function apply(ctx, config = {}) {
       }
     })
     agent.ctx.on('agent/pre-step', async (payload, next) => {
+      // next() 单次调用（2026-08-29 一轮审计 P2-1，同 session-track B 组 P2-2 教训）：
+      // cordis waterfall 的 next() 是 `cbs.shift() ?? inner` 链——catch 里再调一次会把
+      // 下游全部监听器（含其他插件的注入副作用）原样重放一遍。上游失败原样上抛
+      // （不能返回 undefined：运行时读 decision.kind 会 TypeError）；
+      // 注入逻辑单独 try/catch，失败返回原 decision。
+      let decision
       try {
-        const decision = await next()
+        decision = await next()
+      } catch (error) {
+        log.debug('pre-step upstream failed: ' + String((error && error.message) || error))
+        throw error
+      }
+      try {
         if (!decision || decision.kind !== 'enter' || !decision.messages) return decision
         const s = spec()
         if (!s.enabled || !s.host) return decision
@@ -279,7 +290,7 @@ export function apply(ctx, config = {}) {
         return { kind: 'enter', messages: [...decision.messages, reminder] }
       } catch (error) {
         log.debug('recall reminder injection failed: ' + String((error && error.message) || error))
-        return next()
+        return decision
       }
     })
     agent.ctx.on('agent/turn-stopping', (stopping) => {

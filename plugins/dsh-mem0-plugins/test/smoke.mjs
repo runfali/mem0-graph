@@ -440,6 +440,25 @@ console.log('== 第一步强制搜索提醒 ==')
   env.setScope({ ...env.getScope(), forceRecallStep: true })
 }
 
+console.log('== pre-step 单次调用（2026-08-29 一轮审计 P2-1）==')
+{
+  const [agentP] = await spawnAll(['sess-P'])
+  const preSteps = agentP.listeners.get('agent/pre-step') || []
+  assert.ok(preSteps.length >= 1, 'pre-step 监听未注册')
+  let calls = 0
+  const nextBoom = async () => { calls += 1; throw new Error('downstream exploded') }
+  await assert.rejects(
+    () => preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '实义问题' }], source: { kind: 'user' } }], turn: 1, step: 1, signal: null }, nextBoom),
+    /downstream exploded/
+  )
+  assert.equal(calls, 1, '上游失败时 next 只能调用一次（旧 catch return next() 会把下游链重放两遍）')
+  ok('pre-step 上游失败原样上抛且 next 单次调用')
+  // 重构不回归：正常注入路径照旧
+  const nextBase2 = async () => ({ kind: 'enter', messages: [{ role: 'user', content: [{ type: 'text', text: 'q' }], source: { kind: 'user' } }] })
+  const dP = await preSteps[0]({ messages: [{ role: 'user', content: [{ type: 'text', text: '记忆里有什么' }], source: { kind: 'user' } }], turn: 1, step: 1, signal: null }, nextBase2)
+  assert.equal(dP.messages.length, 2); ok('重构后正常注入不回归')
+}
+
 console.log('== 启用后：写入链路 ==')
 {
   const [agentW] = await spawnAll(['sess-W'])
