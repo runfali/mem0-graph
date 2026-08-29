@@ -869,6 +869,43 @@ console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
   assert.equal(q2.buckets.size, 0, '累积 chars 达 maxChars 应立即冲刷清桶'); ok('桶累积达 maxChars 触发冲刷（3×1900≥4000 在第 3 条触发）')
 }
 
+console.log('== 单元：毒桶存活上限 + 失败退避（2026-08-29 事故回归）==')
+{
+  const settle = () => new Promise((r) => setTimeout(r, 5))
+  // A) 确定性失败（服务端对该载荷必然 502）：retries 因跨冷却重置永远停在 1/20，
+  //    只有存活时间上限能让它落地，否则无限重投。
+  let attempts = 0
+  const q = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 30, maxBucketAgeMs: 1 }),
+    addFn: async () => { attempts += 1; throw new Error('LLM extraction failed') },
+    log: {}
+  })
+  q.enqueue({ userId: 'u', sessionId: 'sPoison', userContent: '必然抽取失败的一轮', assistantContent: '答' })
+  q.drain()
+  await new Promise((r) => setTimeout(r, 10))                      // 让桶龄超过 maxBucketAgeMs=1
+  await q.flushDue(Date.now() + 60000); await settle()
+  assert.equal(q.buckets.size, 0, '超龄桶必须被丢'); ok('毒桶按存活上限落地，不再挂回')
+  assert.equal(q.stats.dropped, 1, 'dropped 计数'); ok('超龄丢弃有计数')
+  await q.flushDue(Date.now() + 60000); await settle()
+  assert.equal(attempts, 1, '丢弃后不再重投'); ok('丢弃后彻底停止重投（无无限循环）')
+
+  // B) 退避窗口：网络级失败后 30s 内不得重投（服务端可能还在慢慢跑同一单）
+  let tries = 0
+  const q2 = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 120000 }),
+    addFn: async () => { tries += 1; throw new Error('fetch failed') },
+    log: {}
+  })
+  q2.enqueue({ userId: 'u', sessionId: 'sBack', userContent: '一轮对话', assistantContent: '答' })
+  q2.drain()
+  await q2.flushDue(Date.now() + 60000); await settle()   // 失败 → nextAttemptAt = +30s
+  assert.equal(tries, 1)
+  await q2.flushDue(Date.now()); await settle()            // 退避窗口内
+  assert.equal(tries, 1, '退避窗口内不得重投'); ok('失败退避：30s 内不重投')
+  await q2.flushDue(Date.now() + 31000); await settle()    // 退避到期
+  assert.equal(tries, 2, '退避到期后应重试'); ok('退避到期后照常重试')
+}
+
 console.log('== 中断轮不入记忆 ==')
 {
   const [agentI] = await spawnAll(['sess-I'])

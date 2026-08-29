@@ -31,6 +31,17 @@ export function looksLikeJson(text) {
 
 export const JSON_PLACEHOLDER = '<JSON 结构化数据，已省略>';
 
+/**
+ * 潮浪桶最长存活时间：超过即丢弃并计数。
+ * 2026-08-29 毒桶事故：某轮对话（2166 chars）在服务端必然抽取失败
+ * （分块 + 推理模型把 max_tokens 烧光 → finish_reason=length → 502），
+ * 而「跨冷却新故障段重置 retries」的防误丢设计让 retries 永远停在 1/20，
+ * 该桶每 5-10 分钟重投一次、每次占用三层 LLM 各 120s，无限循环。
+ * retries 防的是「连续快速失败」，时间上限防的是「确定性坏数据」——两者互补。
+ * 可由 resolveConfig().maxBucketAgeMs 覆盖（毫秒）。
+ */
+export const DEFAULT_MAX_BUCKET_AGE_MS = 30 * 60 * 1000;
+
 /** 整条是 JSON 的消息替换为占位符；自然语言（即使内嵌 JSON 片段）原样放行。 */
 export function sanitizeJsonMessage(content) {
   return looksLikeJson(content) ? JSON_PLACEHOLDER : content;
@@ -369,7 +380,23 @@ export class TidalCoalescer {
         bucket.lastFailAt = Date.now();
       }
       const MAX_FLUSH_RETRIES = 20;
-      if (bucket.retries <= MAX_FLUSH_RETRIES) {
+      const ageMs = Date.now() - bucket.created;
+      const maxAgeCfg = this.resolveConfig().maxBucketAgeMs;
+      const maxAgeMs = maxAgeCfg > 0 ? Math.trunc(maxAgeCfg) : DEFAULT_MAX_BUCKET_AGE_MS;
+      if (ageMs > maxAgeMs) {
+        // retries 管「连续快速失败」，存活时间管「确定性毒桶」：跨冷却重置让 retries
+        // 永远停在 1/20，服务端对该载荷必然失败时就会无限重投（2026-08-29 事故）。
+        this.stats.dropped += turns;
+        if (this.log.warn) {
+          this.log.warn('mem0 coalesced flush dropped as stale after ' + Math.round(ageMs / 60000) +
+            ' min / ' + bucket.retries + ' attempt(s) (session=' + (bucket.sessionId || '<empty>') +
+            ', turns=' + turns + '): ' + String((error && error.message) || error));
+        }
+      } else if (bucket.retries <= MAX_FLUSH_RETRIES) {
+        // 指数退避（30s→5min 封顶）：网络级失败往往意味着服务端还在慢慢跑这一单，
+        // 立刻重投只是叠一个同样的长请求。短路不额外退避（熔断自有冷却节奏）。
+        const backoffMs = shortCircuited ? 0 : Math.min(30000 * 2 ** Math.max(0, bucket.retries - 1), 300000);
+        const nextAttemptAt = Date.now() + backoffMs;
         const existing = this.buckets.get(key);
         if (existing && existing !== bucket) {
           existing.messages = bucket.messages.concat(existing.messages);
@@ -380,14 +407,17 @@ export class TidalCoalescer {
           // （服务端挂起 300s 周期下每周期都获得全新 20 次额度）
           existing.retries = Math.max(existing.retries || 0, bucket.retries || 0);
           if (bucket.lastFailAt) existing.lastFailAt = bucket.lastFailAt;
+          existing.nextAttemptAt = Math.max(existing.nextAttemptAt || 0, nextAttemptAt);
           this.#capBucketLength(existing);
         } else {
+          bucket.nextAttemptAt = nextAttemptAt;
           this.buckets.set(key, bucket);
           this.#capBucketLength(bucket);
         }
         if (this.log.warn && !shortCircuited) {
           this.log.warn('mem0 coalesced flush failed (session=' + (bucket.sessionId || '<empty>') +
-            ', turns=' + turns + ', trigger=' + (trigger || 'unknown') + '), will retry (' +
+            ', turns=' + turns + ', trigger=' + (trigger || 'unknown') + ', age=' + Math.round(ageMs / 1000) +
+            's), will retry in ' + Math.round(backoffMs / 1000) + 's (' +
             bucket.retries + '/' + MAX_FLUSH_RETRIES + '): ' + String((error && error.message) || error));
         } else if (this.log.debug && shortCircuited) {
           this.log.debug('mem0 coalesced flush short-circuited by open breaker (session=' +
@@ -415,6 +445,7 @@ export class TidalCoalescer {
       if (!bucket) continue;
       const idleMs = config.idleMs > 0 ? config.idleMs : 5000;
       const windowMs = config.windowMs > 0 ? config.windowMs : 15000;
+      if (bucket.nextAttemptAt > clock) continue; // 失败退避窗口内不重投
       if (clock - bucket.last >= idleMs) void this.flushBucket(key, 'idle');
       else if (clock - bucket.created >= windowMs) void this.flushBucket(key, 'window');
     }
@@ -436,7 +467,7 @@ export class TidalCoalescer {
     for (const bucket of this.buckets.values()) {
       const idleMs = config.idleMs > 0 ? config.idleMs : 5000;
       const windowMs = config.windowMs > 0 ? config.windowMs : 15000;
-      const due = Math.min(bucket.last + idleMs, bucket.created + windowMs);
+      const due = Math.max(bucket.nextAttemptAt || 0, Math.min(bucket.last + idleMs, bucket.created + windowMs));
       if (deadline === null || due < deadline) deadline = due;
     }
     return deadline;
