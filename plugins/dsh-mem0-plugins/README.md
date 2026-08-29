@@ -87,6 +87,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `coalesceMaxTurns` | `5` | 桶内轮数上限 |
 | `coalesceMaxChars` | `4000` | 桶内字符上限 |
 | `fastpathChars` | `2000` | 单轮超过该长度直接落库 |
+| `maxWriteChars` | `4000` | 单次写入 payload 硬上限；超限截断保头（服务端抽取窗口约 4300 字符，超长直写会触发 502） |
 | `redactEnabled` | `true` | 写回载荷上传前脱敏（命中替换为 `[REDACTED:*]` 标记；可关） |
 | `feedbackEnabled` | `true` | update/delete 成功后上报 evolve 反馈（可关） |
 
@@ -173,7 +174,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 - **每次合并冲刷**（info 级）打一条，含累计 totals：
 
 ```
-[dsh-mem0] mem0 coalesced 3 turn(s) into 1 write (session=<id>, saved 2 call(s), chars=512, trigger=idle; totals: batches=12 savedCalls=34 dropped=0 jsonSanitized=3)
+[dsh-mem0] mem0 coalesced 3 turn(s) into 1 write (session=<id>, saved 2 call(s), chars=512, trigger=idle; totals: batches=12 savedCalls=34 dropped=0 jsonSanitized=3 redacted=1 truncated=0)
 ```
 
 - **计数含义**：

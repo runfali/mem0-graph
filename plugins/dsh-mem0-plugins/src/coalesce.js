@@ -55,7 +55,7 @@ export class TidalCoalescer {
     this.queueMaxLen = queueMaxLen > 0 ? Math.trunc(queueMaxLen) : 50;
     this.queue = [];
     this.buckets = new Map(); // key `${userId}\u0000${sessionId}` → {created,last,chars,messages}
-    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, redacted: 0, dropped: 0, bucketTurns: {} };
+    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, redacted: 0, truncated: 0, dropped: 0, bucketTurns: {} };
     // 同会话同 label 的脱敏告警去重（有界，防长会话泄漏）
     this.redactWarned = new Map();
     this.flushing = 0;
@@ -188,6 +188,25 @@ export class TidalCoalescer {
         assistantContent = a.text;
       }
     }
+    // 单次写入 payload 硬上限（2026-08-29 大 payload 教训）：skill review 子代理
+    // 13202 chars 直写 → 服务端单 chunk 17097 tokens 超 context_window=10000 →
+    // LLM 输出截断 finish_reason=length → 502。截断保头（事实多在开头），
+    // 宁损尾部也不让服务端抽取爆窗；truncated 计数入 totals 可观测。
+    const MAX_WRITE = config.maxWriteChars > 0 ? config.maxWriteChars : 4000;
+    const origChars = userContent.length + assistantContent.length;
+    if (origChars > MAX_WRITE) {
+      const keep = (text) => {
+        if (text.length <= MAX_WRITE / 2) return text
+        return text.slice(0, Math.floor(MAX_WRITE / 2)) + ' …[truncated]'
+      }
+      userContent = keep(userContent)
+      assistantContent = keep(assistantContent)
+      this.stats.truncated += 1
+      if (this.log.warn) {
+        this.log.warn('mem0 payload truncated from ' + origChars + ' to <=' + MAX_WRITE +
+          ' chars (session=' + (item.sessionId || '<empty>') + ')')
+      }
+    }
     const messages = [
       { role: 'user', content: userContent },
       { role: 'assistant', content: assistantContent }
@@ -302,7 +321,7 @@ export class TidalCoalescer {
           (trigger ? ', trigger=' + trigger : '') +
           '; totals: batches=' + this.stats.batches + ' savedCalls=' + this.stats.savedCalls +
           ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized +
-          ' redacted=' + this.stats.redacted + ')');
+          ' redacted=' + this.stats.redacted + ' truncated=' + this.stats.truncated + ')');
       }
     } catch (error) {
       // 放回桶首并保留最早 created（window 语义不因重试漂移）；冲刷期间同 key

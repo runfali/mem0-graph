@@ -27,6 +27,7 @@ import { isTrivialPrompt } from './guards.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
 import { TidalCoalescer } from './coalesce.js'
+import { redactSecrets } from './redact.js'
 import { distillQuery } from './distill.js'
 import { buildResultList, truncateOutput } from './formatting.js'
 
@@ -67,6 +68,11 @@ export const Config = z.object({
   coalesceMaxTurns: z.number().step(1).min(1).max(50).default(5),
   coalesceMaxChars: z.number().step(1).min(200).max(200000).default(4000),
   fastpathChars: z.number().step(1).min(200).max(200000).default(2000),
+  // 单次写入 payload 硬上限（2026-08-29 大 payload 教训：skill review 子代理
+  // 13202 chars 直写 → 服务端单 chunk 17097 tokens 超 context_window=10000 →
+  // LLM 输出截断 → 502）。服务端模板约 9500 tokens，安全内容 ≈ ≤4300 chars；
+  // 超限截断保头（事实多在开头），宁损尾部不触发 502 风暴。
+  maxWriteChars: z.number().step(1).min(200).max(200000).default(4000),
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
@@ -187,6 +193,7 @@ export function apply(ctx, config = {}) {
       coalesceMaxTurns: clampInt(value.coalesceMaxTurns, 1, 50, 5),
       coalesceMaxChars: clampInt(value.coalesceMaxChars, 200, 200000, 4000),
       fastpathChars: clampInt(value.fastpathChars, 200, 200000, 2000),
+      maxWriteChars: clampInt(value.maxWriteChars, 200, 200000, 4000),
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
@@ -322,6 +329,7 @@ export function apply(ctx, config = {}) {
         maxTurns: s.coalesceMaxTurns,
         maxChars: s.coalesceMaxChars,
         fastpathChars: s.fastpathChars,
+        maxWriteChars: s.maxWriteChars,
         queueMaxLen: s.queueMaxLen,
         // 供 coalescer 区分「同段连续故障」与「跨冷却的新故障段」：
         // 半开窗口的真实失败间隔≈冷却时长，超过即重置重试计数
@@ -603,8 +611,20 @@ export function apply(ctx, config = {}) {
       try {
         ready(s)
         if (breaker.open) return toolFail('Mem0 temporarily unavailable; will retry automatically in ' + Math.ceil(breaker.remainingMs / 1000) + 's')
+        // （2026-08-29 审计：mem0_add 直写路径曾不过脱敏闸——闸只在潮浪 route()
+        // 内生效；模型把含 key 文本直接 add 会明文入库。与潮浪同语义：命中替换
+        // [REDACTED:label] 再落库，宁误杀不漏放。）
+        let content = String(args.content || '')
+        if (s.redactEnabled !== false) {
+          const red = redactSecrets(content)
+          if (red.hits.length) {
+            content = red.text
+            log.warn('mem0_add redacted ' + red.hits.length + ' secret label(s) [' +
+              red.hits.map((h) => h.label + 'x' + h.count).join(', ') + '] before store')
+          }
+        }
         await clientFor(s).addMessages(
-          [{ role: 'user', content: args.content }],
+          [{ role: 'user', content }],
           { userId: s.userId, agentId: s.agentId, infer: false, metadata: { channel: METADATA_CHANNEL }, signal: exec.signal }
         )
         return toolOk('Fact stored.')

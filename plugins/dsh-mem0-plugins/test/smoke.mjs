@@ -496,6 +496,29 @@ console.log('== 端到端：上传脱敏（B 组）==')
   ok('端到端：含假 key 的轮次上传已脱敏（addFn 收到 [REDACTED:...]，无原 key）')
 }
 
+console.log('== 端到端：mem0_add 工具直写脱敏（2026-08-29 盲区修复）==')
+{
+  const addTool = env.tools[1] // mem0_add
+  const before = fetchCalls.filter((c) => c.path === '/memories').length
+  const res = await addTool.execute({ content: '我的 API key 是 sk-AddToolFake0123456789abcdef，base url 是 http://x/v1' }, { signal: new AbortController().signal })
+  assert.equal(res.ok, true, 'mem0_add 正常返回')
+  const addCall = fetchCalls.filter((c) => c.path === '/memories').at(-1)
+  const addBody = JSON.parse(addCall.body)
+  assert.equal(addBody.infer, false, 'mem0_add 走 infer=false 直写')
+  assert.equal(addBody.messages[0].content.includes('sk-AddToolFake0123456789abcdef'), false, '原 key 不应直写落库')
+  assert.ok(addBody.messages[0].content.includes('[REDACTED:openai-key]'), '直写内容应含 REDACTED 标记')
+  ok('mem0_add 直写过脱敏闸（infer=false 也不漏放）')
+  // 关闭脱敏时原样直写
+  env.setScope({ ...env.getScope(), redactEnabled: false })
+  const res2 = await addTool.execute({ content: 'key2 是 sk-AddToolFake0123456789abcdef' }, { signal: new AbortController().signal })
+  assert.equal(res2.ok, true)
+  const addCall2 = fetchCalls.filter((c) => c.path === '/memories').at(-1)
+  const addBody2 = JSON.parse(addCall2.body)
+  assert.ok(addBody2.messages[0].content.includes('sk-AddToolFake0123456789abcdef'), 'redactEnabled=false 原样直写')
+  ok('mem0_add 脱敏开关可关（旁路）')
+  env.setScope({ ...env.getScope(), redactEnabled: true })
+}
+
 console.log('== 单元：上传脱敏闸（coalesce 接线）==')
 {
   const C = (await import('../src/coalesce.js')).TidalCoalescer
@@ -533,6 +556,39 @@ console.log('== 单元：上传脱敏闸（coalesce 接线）==')
   assert.equal(q2.stats.redacted, 0)
   assert.ok(q2.buckets.get('u\u0000r2').messages[0].content.includes('sk-Abc123Def456Ghi789Jkl0'))
   ok('redactEnabled=false 完全旁路')
+}
+
+console.log('== 单元：大 payload 截断兜底（2026-08-29 502 教训）==')
+{
+  const C = (await import('../src/coalesce.js')).TidalCoalescer
+  const sent = []
+  const q = new C({
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, maxWriteChars: 4000 }),
+    addFn: async ({ messages }) => { sent.push(messages) }, log: {}
+  })
+  const warns = []
+  q.log.warn = (m) => warns.push(m)
+  const big = 'x'.repeat(13202)
+  q.enqueue({ userId: 'u', sessionId: 'big1', userContent: '短问题', assistantContent: big })
+  q.drain()
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(q.stats.truncated, 1); ok('超限 payload 计入 truncated 计数')
+  assert.ok(warns.some((m) => m.includes('payload truncated from 13205')), 'warn 含原始/截断字符数')
+  assert.equal(sent.length, 1, '截断后经 fastpath 直写（>fastpathChars）')
+  const joined = sent[0].map((m) => m.content).join('')
+  assert.ok(joined.length <= 4000 + 32, '截断后总长 ≤ maxWriteChars + 截断标记余量，实际 ' + joined.length)
+  assert.ok(joined.includes('[truncated]'), '截断标记存在')
+  assert.ok(sent[0][1].content.startsWith('xxxxx'), '保头语义：assistant 开头保留')
+  // 未超限不截断
+  const sent2 = []
+  const q2 = new C({
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, maxWriteChars: 4000 }),
+    addFn: async ({ messages }) => { sent2.push(messages) }, log: {}
+  })
+  q2.enqueue({ userId: 'u', sessionId: 'big2', userContent: '短', assistantContent: '正常内容'.repeat(100) })
+  q2.drain()
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(q2.stats.truncated, 0); ok('未超限不触发截断')
 }
 
 console.log('== 单元：有界队列丢最旧 ==')
