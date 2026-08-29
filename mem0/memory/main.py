@@ -248,6 +248,10 @@ DEFAULT_MAX_INPUT_TOKENS = int(os.environ.get("MEM0_LLM_MAX_INPUT_TOKENS", "0"))
 # 以保持向后兼容；两者均为 0 表示不限制、不启用分块。
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("MEM0_LLM_CONTEXT_WINDOW", "0")) or DEFAULT_MAX_INPUT_TOKENS
 
+# Smallest content slice worth splitting for. Below this the fixed prompt overhead
+# already dominates the window and chunking cannot help (see _build_extraction_chunks).
+MIN_CHUNK_CONTENT_TOKENS = 512
+
 # Entity parameters that must be passed via filters, not top-level kwargs
 ENTITY_PARAMS = frozenset({"user_id", "agent_id", "run_id"})
 
@@ -581,8 +585,9 @@ def _build_extraction_chunks(
       - a conserv/estimate for the "recently extracted memories" that grow as
         earlier chunks are processed (up to 20 items, capped at 1/8 of the window)
 
-    Returns a list of message chunks, or the original messages when they already
-    fit in a single call.
+    Returns a list of message chunks, or the original messages (single call) when
+    they already fit — or when the fixed overhead alone leaves less than
+    ``MIN_CHUNK_CONTENT_TOKENS`` per chunk, because splitting cannot then help.
     """
     base_overhead = _estimate_extraction_prompt_tokens(
         system_prompt,
@@ -607,7 +612,21 @@ def _build_extraction_chunks(
     # (each chunk after the first re-sends up to 20 prior extractions).
     recent_reserve = min(context_window // 8, 4096)
     per_chunk_budget = context_window - output_reserve - base_overhead - recent_reserve
-    per_chunk_budget = max(per_chunk_budget, 512)
+    if per_chunk_budget < MIN_CHUNK_CONTENT_TOKENS:
+        # Chunking only shrinks the "New Messages" block — the fixed overhead
+        # (system template + existing memories + last-k history) is re-sent with
+        # every chunk. When that overhead alone already eats the window, no split
+        # can produce a chunk that fits; splitting just multiplies calls that each
+        # still overflow. One honest call beats N doomed ones.
+        # (2026-08-29: context_window=10000 vs base_overhead≈9000 + reserve=8704
+        #  clamped the budget to 512 → every 2-message payload became 2 chunks and
+        #  chunk 1 died on finish_reason=length, forever.)
+        logger.warning(
+            "add chunking disabled: overhead does not fit the window "
+            "(base_overhead=%d, output_reserve=%d, recent_reserve=%d, context_window=%d)",
+            base_overhead, output_reserve, recent_reserve, context_window,
+        )
+        return [messages]
 
     chunks = []
     current = []
@@ -1377,7 +1396,13 @@ class Memory(MemoryBase):
             # slack) so each chunk's full prompt never approaches the n_ctx ceiling.
             _llm_cfg = self.config.llm.config or {}
             _max_output = int(_llm_cfg.get("max_tokens", 0) or 0)
-            _output_reserve = max(_max_output + 512, DEFAULT_CONTEXT_WINDOW // 8)
+            # Reserve = max_tokens + slack, but never more than half the window: a
+            # reserve that eats the window leaves no room for content and turns every
+            # payload into a doomed chunk split (2026-08-29 incident).
+            _output_reserve = min(
+                max(_max_output + 512, DEFAULT_CONTEXT_WINDOW // 8),
+                DEFAULT_CONTEXT_WINDOW // 2,
+            )
             _chunks = _build_extraction_chunks(
                 messages,
                 system_prompt,
@@ -3741,7 +3766,13 @@ class AsyncMemory(MemoryBase):
             # slack) so each chunk's full prompt never approaches the n_ctx ceiling.
             _llm_cfg = self.config.llm.config or {}
             _max_output = int(_llm_cfg.get("max_tokens", 0) or 0)
-            _output_reserve = max(_max_output + 512, DEFAULT_CONTEXT_WINDOW // 8)
+            # Reserve = max_tokens + slack, but never more than half the window: a
+            # reserve that eats the window leaves no room for content and turns every
+            # payload into a doomed chunk split (2026-08-29 incident).
+            _output_reserve = min(
+                max(_max_output + 512, DEFAULT_CONTEXT_WINDOW // 8),
+                DEFAULT_CONTEXT_WINDOW // 2,
+            )
             _chunks = _build_extraction_chunks(
                 messages,
                 system_prompt,
