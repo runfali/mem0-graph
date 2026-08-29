@@ -10,7 +10,11 @@
  *   防止提取模型把工具输出/配置原文的键名当「事实」入库；
  * - 分桶合并：空闲超时 / 窗口超时 / 轮数上限 / 字符上限任一达标即冲刷；
  * - 快速直写：单轮字符数超过 fastpathChars 直接落库，不让长内容等合并。
+ * - 上传脱敏：route 单点对 user/assistant 文本过 redactSecrets 闸，命中 secrets
+ *   替换为 [REDACTED:label] 再入桶/直冲（B 组，宁误杀不漏放，详见 redact.js）。
  */
+
+import { redactSecrets } from './redact.js'
 
 /** 判断整条消息是否为可解析的 JSON 结构（工具输出/配置原文）。 */
 export function looksLikeJson(text) {
@@ -51,7 +55,9 @@ export class TidalCoalescer {
     this.queueMaxLen = queueMaxLen > 0 ? Math.trunc(queueMaxLen) : 50;
     this.queue = [];
     this.buckets = new Map(); // key `${userId}\u0000${sessionId}` → {created,last,chars,messages}
-    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, dropped: 0, bucketTurns: {} };
+    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, redacted: 0, dropped: 0, bucketTurns: {} };
+    // 同会话同 label 的脱敏告警去重（有界，防长会话泄漏）
+    this.redactWarned = new Map();
     this.flushing = 0;
   }
 
@@ -140,14 +146,47 @@ export class TidalCoalescer {
     return String(userId || '') + '\u0000' + String(sessionId || '');
   }
 
+  /** 脱敏命中记账：累加计数 + 同会话同 label 只 warn 一次（映射有界防泄漏）。 */
+  noteRedactHits(sessionId, hits) {
+    const sid = String(sessionId || '<empty>');
+    const merged = new Map();
+    for (const h of hits) {
+      this.stats.redacted += 1;
+      merged.set(h.label, (merged.get(h.label) || 0) + h.count);
+    }
+    const fresh = [];
+    for (const [label, count] of merged) {
+      const key = sid + '\u0000' + label;
+      if (this.redactWarned.has(key)) continue;
+      this.redactWarned.set(key, 1);
+      fresh.push(label + 'x' + count);
+    }
+    if (this.redactWarned.size > 256) this.redactWarned.clear();
+    if (fresh.length && this.log.warn) {
+      this.log.warn('mem0 upload redacted ' + fresh.length + ' secret label(s) [' + fresh.join(', ') +
+        '] before infer (session=' + sid + ')');
+    }
+  }
+
   /** 单条入队项路由：JSON 剥除 → 直写或进桶。 */
   route(item) {
     const config = this.resolveConfig();
-    const userContent = sanitizeJsonMessage(String(item.userContent || ''));
-    const assistantContent = sanitizeJsonMessage(String(item.assistantContent || ''));
+    let userContent = sanitizeJsonMessage(String(item.userContent || ''));
+    let assistantContent = sanitizeJsonMessage(String(item.assistantContent || ''));
     if (userContent !== item.userContent || assistantContent !== item.assistantContent) {
       this.stats.jsonSanitized += 1;
       if (this.log.debug) this.log.debug('mem0 sanitized pure-JSON message(s) for session ' + (item.sessionId || '<empty>'));
+    }
+    // 上传脱敏闸（B 组）：抽取请求会把原文送云端 LLM，出门前替换 secrets。
+    // 默认开启（resolve 未给 redactEnabled 时按 true 处理），关闭即完全旁路。
+    if (config.redactEnabled !== false) {
+      const u = redactSecrets(userContent);
+      const a = redactSecrets(assistantContent);
+      if (u.hits.length || a.hits.length) {
+        this.noteRedactHits(item.sessionId, u.hits.concat(a.hits));
+        userContent = u.text;
+        assistantContent = a.text;
+      }
     }
     const messages = [
       { role: 'user', content: userContent },
@@ -262,7 +301,8 @@ export class TidalCoalescer {
           ', saved ' + Math.max(0, turns - 1) + ' call(s), chars=' + bucket.chars +
           (trigger ? ', trigger=' + trigger : '') +
           '; totals: batches=' + this.stats.batches + ' savedCalls=' + this.stats.savedCalls +
-          ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized + ')');
+          ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized +
+          ' redacted=' + this.stats.redacted + ')');
       }
     } catch (error) {
       // 放回桶首并保留最早 created（window 语义不因重试漂移）；冲刷期间同 key

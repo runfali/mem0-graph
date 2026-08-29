@@ -465,6 +465,51 @@ console.log('== 启用后：写入链路 ==')
   assert.equal(lastBody.metadata.channel, 'dsh'); ok('metadata.channel=dsh 盖章')
 }
 
+console.log('== 端到端：上传脱敏（B 组）==')
+{
+  const [agentR] = await spawnAll(['sess-R'])
+  const FAKE = 'sk-E2eFake0123456789abcdef'
+  await emit('session/event', { id: 'sess-R' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住我的 key：' + FAKE }] } })
+  await emit('session/event', { id: 'sess-R' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，已记住。' }] } })
+  await emitOn(agentR, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
+  env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })
+  await new Promise((r) => setTimeout(r, 1300))
+  const redBody = JSON.parse(fetchCalls.filter((c) => c.path === '/memories').at(-1).body)
+  const joined = redBody.messages.map((m) => m.content).join('\n')
+  assert.equal(joined.includes(FAKE), false, '原 key 不应出现在上传 payload')
+  assert.ok(joined.includes('[REDACTED:openai-key]'), '应出现 REDACTED 标记')
+  ok('端到端：含假 key 的轮次上传已脱敏（addFn 收到 [REDACTED:...]，无原 key）')
+}
+
+console.log('== 单元：上传脱敏闸（coalesce 接线）==')
+{
+  const C = (await import('../src/coalesce.js')).TidalCoalescer
+  const q = new C({
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async () => {}, log: {}
+  })
+  const warns = []
+  q.log.warn = (m) => warns.push(m)
+  q.enqueue({ userId: 'u', sessionId: 'r1', userContent: 'key 是 sk-Abc123Def456Ghi789Jkl0', assistantContent: '收到' })
+  q.drain()
+  assert.equal(q.stats.redacted, 1); ok('stats.redacted 计数')
+  assert.ok(q.buckets.get('u\u0000r1').messages[0].content.includes('[REDACTED:openai-key]')); ok('入桶消息已替换')
+  assert.equal(warns.length, 1); ok('命中 warn 一次')
+  q.enqueue({ userId: 'u', sessionId: 'r1', userContent: '又一个 sk-Xyz987Wvu654Rst321Abc', assistantContent: '嗯' })
+  q.drain()
+  assert.equal(q.stats.redacted, 2)
+  assert.equal(warns.length, 1); ok('同会话同 label 不重复 warn')
+  const q2 = new C({
+    resolve: () => ({ enabled: true, redactEnabled: false, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000 }),
+    addFn: async () => {}, log: {}
+  })
+  q2.enqueue({ userId: 'u', sessionId: 'r2', userContent: 'key 是 sk-Abc123Def456Ghi789Jkl0', assistantContent: 'ok' })
+  q2.drain()
+  assert.equal(q2.stats.redacted, 0)
+  assert.ok(q2.buckets.get('u\u0000r2').messages[0].content.includes('sk-Abc123Def456Ghi789Jkl0'))
+  ok('redactEnabled=false 完全旁路')
+}
+
 console.log('== 单元：有界队列丢最旧 ==')
 {
   const q = new (await import('../src/coalesce.js')).TidalCoalescer({

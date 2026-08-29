@@ -58,6 +58,8 @@ export const Config = z.object({
   distillTimeoutMs: z.number().step(1).min(1000).max(600000).default(90000),
   distillRetryAfterMs: z.number().step(1).min(500).max(120000).default(20000),
   syncEnabled: z.boolean().default(true),
+  // 上传脱敏闸（B 组，memorax 吸收）：写服务端前对 user/assistant 文本打码 secrets
+  redactEnabled: z.boolean().default(true),
   feedbackEnabled: z.boolean().default(true),
   coalesceEnabled: z.boolean().default(true),
   coalesceIdleMs: z.number().step(1).min(500).max(300000).default(5000),
@@ -177,6 +179,7 @@ export function apply(ctx, config = {}) {
       distillTimeoutMs: clampInt(value.distillTimeoutMs, 1000, 600000, 90000),
       distillRetryAfterMs: clampInt(value.distillRetryAfterMs, 500, 120000, 20000),
       syncEnabled: value.syncEnabled !== false,
+      redactEnabled: value.redactEnabled !== false,
       feedbackEnabled: value.feedbackEnabled !== false,
       coalesceEnabled: value.coalesceEnabled !== false,
       coalesceIdleMs: clampInt(value.coalesceIdleMs, 500, 300000, 5000),
@@ -313,6 +316,7 @@ export function apply(ctx, config = {}) {
       const s = spec()
       return {
         enabled: s.coalesceEnabled,
+        redactEnabled: s.redactEnabled,
         idleMs: s.coalesceIdleMs,
         windowMs: s.coalesceWindowMs,
         maxTurns: s.coalesceMaxTurns,

@@ -47,6 +47,7 @@ window.__ModuleLoader__.load({
       { key: "distillTimeoutMs", type: "number", min: 1000, max: 600000 },
       { key: "distillRetryAfterMs", type: "number", min: 500, max: 120000 },
       { key: "syncEnabled", type: "bool" },
+      { key: "redactEnabled", type: "bool" },
       { key: "coalesceEnabled", type: "bool" },
       { key: "coalesceIdleMs", type: "number", min: 500, max: 300000 },
       { key: "coalesceWindowMs", type: "number", min: 1000, max: 600000 },
@@ -318,6 +319,8 @@ window.__ModuleLoader__.load({
       "hint.distillRetryAfterMs": "首请求无响应超过该时长即并发第二请求，先完成者胜出，默认 20000",
       "field.syncEnabled": "自动写入对话",
       "hint.syncEnabled": "每轮结束后把「用户消息+助手回复」交给服务端抽取事实",
+      "field.redactEnabled": "上传前脱敏",
+      "hint.redactEnabled": "上传前把 API key / 私钥 / Bearer 令牌 / password 等替换为 [REDACTED:标签]，防止抽取请求把 secrets 带出网；只影响上传副本，会话原文不变",
       "field.coalesceEnabled": "潮浪并忆（合并写入）",
       "hint.coalesceEnabled": "把同一会话的多条短对话合并为一次批量写入，摊薄 LLM 抽取调用",
       "field.coalesceIdleMs": "合并空闲阈值（毫秒）",
@@ -369,7 +372,7 @@ window.__ModuleLoader__.load({
     const GROUPS = [
       { titleKey: "group.connection", keys: ["enabled", "host", "apiKey", "userId", "agentId"] },
       { titleKey: "group.recall", keys: ["forceRecallStep", "topK", "rerank", "distillEnabled", "distillMinChars", "distillInputMaxChars", "distillBaseUrl", "distillApiKey", "distillModel", "distillTimeoutMs", "distillRetryAfterMs"] },
-      { titleKey: "group.sync", keys: ["syncEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars", "feedbackEnabled"] },
+      { titleKey: "group.sync", keys: ["syncEnabled", "redactEnabled", "coalesceEnabled", "coalesceIdleMs", "coalesceWindowMs", "coalesceMaxTurns", "coalesceMaxChars", "fastpathChars", "feedbackEnabled"] },
       { titleKey: "group.reliability", keys: ["queueMaxLen", "breakerThreshold", "breakerCooldownMs", "requestTimeoutMs"] },
       { titleKey: "group.output", keys: ["outputMaxLines", "outputMaxKb", "itemMaxChars"] }
     ];
