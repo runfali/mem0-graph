@@ -395,7 +395,7 @@ bundle 插件 [`plugins/dsh-mem0-plugins/`](plugins/dsh-mem0-plugins/README.md)�
 安装（web profile）：
 
 ```bash
-dsh plugin --profile web add /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
+dsh plugin --profile web add ./plugins/dsh-mem0-plugins
 # 卸载：dsh plugin --profile web remove dsh-mem0-plugins
 ```
 

@@ -12,6 +12,7 @@ bundle 插件：`dsh plugin add` 安装、`dsh plugin remove` 卸载，**不改�
 | **使用引导** | 常驻 | 系统提示中注册使用说明节，引导模型对用户相关的问题主动调 `mem0_search`（多角度多跳） |
 | **自动写入** | 每轮对话结束 | 把「用户消息 + 助手回复」交给服务端 LLM 抽取事实（`infer: true`）；纯 JSON 的工具输出会被替换成占位符防污染 |
 | **潮浪并忆** | 写入时 | 同一会话的短对话按 user 分桶合并：空闲 5s / 窗口 15s / 5 轮 / 4000 字符任一达标即合并为一次批量写入，摊薄抽取调用；超长消息(>2000 字符)走快速直写 |
+| **上传脱敏** | 写入时 | user/assistant 文本交给抽取 LLM 前过纯函数密钥闸（sk- 风格 key、AWS key、Bearer/X-API-Key 头、PEM 块、password= 键值、.env 形态折叠），命中替换为 `[REDACTED:label]`；`redactEnabled` 可关 |
 | **反馈闭环** | update/delete 后 | best-effort 上报 `/evolve/feedback`（correction/useless），参与服务端 salience 进化 |
 
 ## 四个模型工具
@@ -27,7 +28,7 @@ bundle 插件：`dsh plugin add` 安装、`dsh plugin remove` 卸载，**不改�
 
 ```bash
 # 安装（web profile；安装后重启 dsh 生效）
-dsh plugin --profile web add /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
+dsh plugin --profile web add ./plugins/dsh-mem0-plugins
 
 # 卸载
 dsh plugin --profile web remove dsh-mem0-plugins
@@ -65,8 +66,8 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `distillEnabled` | `true` | 长文本查询蒸馏总开关（见下方「查询蒸馏」） |
 | `distillMinChars` | `500` | 不超过该长度的消息原样直查，零损失零开销 |
 | `distillInputMaxChars` | `8000` | 送入蒸馏模型的原文截断上限 |
-| `distillBaseUrl` | `http://10.220.0.35:8090/v1` | 蒸馏端点（OpenAI 兼容）；留空跳过蒸馏直查原文 |
-| `distillApiKey` | `devops` | Bearer 鉴权，与 hermes 默认一致 |
+| `distillBaseUrl` | `（空）` | 蒸馏端点（OpenAI 兼容）；留空跳过蒸馏直查原文 |
+| `distillApiKey` | `（空）` | Bearer 鉴权；端点留空时蒸馏自动跳过 |
 | `distillModel` | `Qwen3.5-9B` | 蒸馏模型（本地部署） |
 | `distillTimeoutMs` | `30000` | 蒸馏单次超时 |
 | `distillRetryAfterMs` | `20000` | 双飞触发阈值：首请求无响应超过该时长即并发第二请求，先完成者胜出 |
@@ -86,6 +87,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `coalesceMaxTurns` | `5` | 桶内轮数上限 |
 | `coalesceMaxChars` | `4000` | 桶内字符上限 |
 | `fastpathChars` | `2000` | 单轮超过该长度直接落库 |
+| `redactEnabled` | `true` | 写回载荷上传前脱敏（命中替换为 `[REDACTED:*]` 标记；可关） |
 | `feedbackEnabled` | `true` | update/delete 成功后上报 evolve 反馈（可关） |
 
 ![自动写入配置：合并阈值/快速直写/进化反馈](docs/screenshot/配置展示-4.png)
@@ -107,7 +109,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 - id: mem0
   config:
     enabled: true
-    host: http://10.200.0.5:8888
+    host: http://mem0.internal:8888
     apiKey: your-admin-api-key
 ```
 
@@ -145,7 +147,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 4. **并发双飞**：首请求 20s 无响应即并发第二请求（首个不取消），先完成者胜出；
 5. 全部失败/超时：回退原始 query，检索永不静默丢失。
 
-真机记录（2026-08-23，Qwen3.5-9B @10.220.0.35:8090）：
+真机记录（2026-08-23，Qwen3.5-9B @ 本地蒸馏端点）：
 
 ```
 原文长度: 4250 → distilled 4250 -> 17 chars (6480 ms)
@@ -197,7 +199,7 @@ JSON 剥除与快速直写为 debug 级。熔断开合、直接写在失败时�
 ## 本地验证
 
 ```bash
-cd /data/code/mem0_falkordb/plugins/dsh-mem0-plugins
+cd plugins/dsh-mem0-plugins
 node test/smoke.mjs         # Host 半：apply 全链路 + 工具（含蒸馏）+ 写入链路 + 强制提醒 + 卫生（81 项）
 node test/client-smoke.mjs  # Client 半：bundle 加载 + locale/slot 注册 + 表单 save 真链（28 项）
 ```

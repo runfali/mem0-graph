@@ -110,7 +110,7 @@ docker exec mem0-dev-mem0-1 python3 -c "import sqlite3; db=sqlite3.connect('/app
 
 ### 图碎片补充召回
 
-图搜索返回的实体关系碎片（如「发哥 部署于 192.0.2.163」）**参与 rerank 竞争**，与向量结果统一由 reranker 按 query 相关性打分排序：
+图搜索返回的实体关系碎片（如「alice 部署于 192.0.2.163」）**参与 rerank 竞争**，与向量结果统一由 reranker 按 query 相关性打分排序：
 
 - **关系类型存储**：纯中文关系类型经 backtick 转义直接写入（`部署于`、`偏好`），不再映射英文（909705c 的 52 条中文→英文映射表已删除，见 `mem0/memory/utils.py` `sanitize_relationship_for_cypher`）
 - **召回通道**：
@@ -152,7 +152,7 @@ LLM 未输出 `importance` 时按关键词自动判断（Phase 2.6，sync/async 
 
 | 分值 | 判断 | 关键词示例 |
 |------|------|-----------|
-| 5 | 高价值信号命中 | 发哥 / 偏好 / 部署 / 配置 / 姓名 / 住在 |
+| 5 | 高价值信号命中 | 用户昵称 / 偏好 / 部署 / 配置 / 姓名 / 住在 |
 | 2 | 低价值信号命中（优先判断） | 测试 / 验证 / 查询 / 建议 / 待办 / 需配置 / 处理顺序 |
 | 3 | 兜底 | 其余 |
 
@@ -180,10 +180,10 @@ curl -s -X POST http://localhost:8888/search \
 
 ```bash
 # 在 server/.env 中添加
-echo "MEM0_ENABLE_CONTRADICTION=true" >> /data/mem0_falkordb/server/.env
+echo "MEM0_ENABLE_CONTRADICTION=true" >> server/.env
 
 # 重建容器生效（.env 变更需重建，restart 不生效）
-cd /data/mem0_falkordb/server && docker compose up -d --force-recreate mem0
+cd server && docker compose up -d --force-recreate mem0
 ```
 
 开启后，Agent 写入记忆时发现矛盾（如先存"喜欢咖啡"后说"讨厌咖啡"）→ 自动 DELETE 旧记忆。所有变更记录在 history 表可追溯。
