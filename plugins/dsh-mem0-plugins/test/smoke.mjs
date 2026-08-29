@@ -605,6 +605,19 @@ console.log('== 单元：大 payload 切片（2026-08-29 502 教训，全量保�
   q2.drain()
   await new Promise((r) => setTimeout(r, 10))
   assert.equal(q2.stats.sliced, 0); ok('未超阈值不切片')
+  // 码点安全（2026-08-29 一轮审计 P2）：无换行长文硬切，切点恰落在 emoji 代理对中间时
+  // 回退一个 UTF-16 单元，绝不出孤代理（旧行为 piece1 尾部残留孤立 D83D）
+  const emojiText = 'a'.repeat(1997) + '😀' + 'b'.repeat(10)
+  const emojiPieces = sliceText(emojiText, 1998)
+  assert.equal(emojiPieces.join(''), emojiText, '码点全量保留（无截断）')
+  for (const p of emojiPieces) {
+    if (!p.length) continue
+    const first = p.charCodeAt(0)
+    const last = p.charCodeAt(p.length - 1)
+    assert.ok(!(last >= 0xD800 && last <= 0xDBFF), '片尾不得残留孤立高代理')
+    assert.ok(!(first >= 0xDC00 && first <= 0xDFFF), '片头不得残留孤立低代理')
+  }
+  ok('sliceText 硬切边界码点安全（emoji 不切半）')
 }
 
 console.log('== 单元：有界队列丢最旧 ==')

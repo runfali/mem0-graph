@@ -54,6 +54,8 @@ export function sanitizeJsonMessage(content) {
  * 13202 chars 单条独占 chunk（模板+内容 ≈17000 tokens 超 context_window=10000）
  * → LLM 输出截断 → 502。客户端先切片，服务端逐条分块、accumulated 合并。
  * 段落优先（\n\n）→ 行（\n）→ 硬切；每片 ≤ pieceChars。
+ * 硬切边界码点安全：切点落在代理对（emoji 等）中间时回退一个 UTF-16 单元，
+ * 把完整码点让给下一片（2026-08-29 审计：UTF-16 slice 切半 surrogate 是既有审计分级 P2）。
  * @param {string} text
  * @param {number} pieceChars 每片字符上限（默认 2000，实测服务端单条安全值）
  * @returns {string[]} 切片数组（未超限时 [原文]）
@@ -68,6 +70,15 @@ export function sliceText(text, pieceChars) {
     let cut = window.lastIndexOf('\n\n')
     if (cut < limit / 2) cut = window.lastIndexOf('\n')
     if (cut < limit / 2) cut = limit
+    // 码点安全：cut-1 是高代理且 cut 是低代理 → 边界切半了一对，回退让整码点进下一片
+    // （回退后 cut 不得为 0——空片 + rest 原样 = 死循环；实际 limit≥200 不会触底）
+    if (cut > 1 && cut < rest.length) {
+      const prev = rest.charCodeAt(cut - 1)
+      if (prev >= 0xd800 && prev <= 0xdbff) {
+        const next = rest.charCodeAt(cut)
+        if (next >= 0xdc00 && next <= 0xdfff) cut -= 1
+      }
+    }
     pieces.push(rest.slice(0, cut))
     rest = rest.slice(cut).replace(/^[\s\n]+/, '')
   }
