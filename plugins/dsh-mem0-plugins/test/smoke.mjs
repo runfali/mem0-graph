@@ -558,37 +558,53 @@ console.log('== 单元：上传脱敏闸（coalesce 接线）==')
   ok('redactEnabled=false 完全旁路')
 }
 
-console.log('== 单元：大 payload 截断兜底（2026-08-29 502 教训）==')
+console.log('== 单元：大 payload 切片（2026-08-29 502 教训，全量保留）==')
 {
+  const { sliceText } = await import('../src/coalesce.js')
   const C = (await import('../src/coalesce.js')).TidalCoalescer
+  // sliceText 纯函数：全量保留、段落边界优先
+  const text = '段落一：这是第一段内容。\n\n段落二：这是第二段内容，稍微长一点用于测试。\n\n段落三：收尾。'
+  const pieces = sliceText(text, 20)
+  assert.ok(pieces.length >= 3, '长文本切成多片')
+  // 切片点只丢边界空白（设计行为），非空白内容全量保留
+  const joinedNoWs = pieces.join('').replace(/\s/g, '')
+  const origNoWs = text.replace(/\s/g, '')
+  assert.equal(joinedNoWs, origNoWs, '去空白后与原文一致（内容全量保留）')
+  ok('sliceText 全量保留、段落边界优先')
+  const hard = sliceText('x'.repeat(5000), 2000)
+  assert.ok(hard.length >= 3 && hard.every((p) => p.length <= 2000), '无段落边界时硬切且每片不超限')
+  assert.equal(hard.join(''), 'x'.repeat(5000), '硬切也不丢内容')
+  ok('sliceText 无段落时硬切、不丢内容')
+  // route 集成：13202 chars 单条 assistant → 切成多片消息，全量直写
   const sent = []
   const q = new C({
-    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, maxWriteChars: 4000 }),
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, sliceThreshold: 8000, slicePieceChars: 2000 }),
     addFn: async ({ messages }) => { sent.push(messages) }, log: {}
   })
   const warns = []
   q.log.warn = (m) => warns.push(m)
-  const big = 'x'.repeat(13202)
+  const big = 'y'.repeat(13202)
   q.enqueue({ userId: 'u', sessionId: 'big1', userContent: '短问题', assistantContent: big })
   q.drain()
   await new Promise((r) => setTimeout(r, 10))
-  assert.equal(q.stats.truncated, 1); ok('超限 payload 计入 truncated 计数')
-  assert.ok(warns.some((m) => m.includes('payload truncated from 13205')), 'warn 含原始/截断字符数')
-  assert.equal(sent.length, 1, '截断后经 fastpath 直写（>fastpathChars）')
+  assert.equal(q.stats.sliced, 1); ok('超限 payload 计入 sliced 计数')
+  assert.ok(warns.some((m) => m.includes('payload sliced')), 'warn 报告切片')
+  assert.equal(sent.length, 1, '切片后仍一次直写（fastpath）')
   const joined = sent[0].map((m) => m.content).join('')
-  assert.ok(joined.length <= 4000 + 32, '截断后总长 ≤ maxWriteChars + 截断标记余量，实际 ' + joined.length)
-  assert.ok(joined.includes('[truncated]'), '截断标记存在')
-  assert.ok(sent[0][1].content.startsWith('xxxxx'), '保头语义：assistant 开头保留')
-  // 未超限不截断
+  assert.equal(joined, '短问题' + 'y'.repeat(13202), '切片后全量保留（无截断）')
+  assert.ok(sent[0].filter((m) => m.role === 'assistant').length >= 7, 'assistant 切成 ≥7 片（每片 ≤2000）')
+  assert.ok(sent[0].every((m) => m.content.length <= 2000 || m.role === 'user'), '每片不超 slicePieceChars')
+  ok('route 切片：13202 chars → 多片全量直写')
+  // 未超阈值不切片
   const sent2 = []
   const q2 = new C({
-    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, maxWriteChars: 4000 }),
+    resolve: () => ({ enabled: true, idleMs: 5000, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, sliceThreshold: 8000, slicePieceChars: 2000 }),
     addFn: async ({ messages }) => { sent2.push(messages) }, log: {}
   })
   q2.enqueue({ userId: 'u', sessionId: 'big2', userContent: '短', assistantContent: '正常内容'.repeat(100) })
   q2.drain()
   await new Promise((r) => setTimeout(r, 10))
-  assert.equal(q2.stats.truncated, 0); ok('未超限不触发截断')
+  assert.equal(q2.stats.sliced, 0); ok('未超阈值不切片')
 }
 
 console.log('== 单元：有界队列丢最旧 ==')

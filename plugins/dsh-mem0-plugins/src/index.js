@@ -68,11 +68,12 @@ export const Config = z.object({
   coalesceMaxTurns: z.number().step(1).min(1).max(50).default(5),
   coalesceMaxChars: z.number().step(1).min(200).max(200000).default(4000),
   fastpathChars: z.number().step(1).min(200).max(200000).default(2000),
-  // 单次写入 payload 硬上限（2026-08-29 大 payload 教训：skill review 子代理
-  // 13202 chars 直写 → 服务端单 chunk 17097 tokens 超 context_window=10000 →
-  // LLM 输出截断 → 502）。服务端模板约 9500 tokens，安全内容 ≈ ≤4300 chars；
-  // 超限截断保头（事实多在开头），宁损尾部不触发 502 风暴。
-  maxWriteChars: z.number().step(1).min(200).max(200000).default(4000),
+  // 单条超长消息切片（2026-08-29 大 payload 教训：skill review 子代理 13202
+  // chars 单条直写 → 服务端分块按消息粒度不拆单条 → chunk 超 context_window →
+  // LLM 截断 → 502）。超过 sliceThreshold 的 user/assistant 消息按段落切成
+  // ≤slicePieceChars 的多条消息，全量保留；服务端逐条分块、accumulated 合并。
+  sliceThreshold: z.number().step(1).min(200).max(200000).default(8000),
+  slicePieceChars: z.number().step(1).min(200).max(200000).default(2000),
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
@@ -193,7 +194,8 @@ export function apply(ctx, config = {}) {
       coalesceMaxTurns: clampInt(value.coalesceMaxTurns, 1, 50, 5),
       coalesceMaxChars: clampInt(value.coalesceMaxChars, 200, 200000, 4000),
       fastpathChars: clampInt(value.fastpathChars, 200, 200000, 2000),
-      maxWriteChars: clampInt(value.maxWriteChars, 200, 200000, 4000),
+      sliceThreshold: clampInt(value.sliceThreshold, 200, 200000, 8000),
+      slicePieceChars: clampInt(value.slicePieceChars, 200, 200000, 2000),
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
@@ -329,7 +331,8 @@ export function apply(ctx, config = {}) {
         maxTurns: s.coalesceMaxTurns,
         maxChars: s.coalesceMaxChars,
         fastpathChars: s.fastpathChars,
-        maxWriteChars: s.maxWriteChars,
+        sliceThreshold: s.sliceThreshold,
+        slicePieceChars: s.slicePieceChars,
         queueMaxLen: s.queueMaxLen,
         // 供 coalescer 区分「同段连续故障」与「跨冷却的新故障段」：
         // 半开窗口的真实失败间隔≈冷却时长，超过即重置重试计数

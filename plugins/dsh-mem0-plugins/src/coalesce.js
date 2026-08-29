@@ -36,6 +36,33 @@ export function sanitizeJsonMessage(content) {
   return looksLikeJson(content) ? JSON_PLACEHOLDER : content;
 }
 
+/**
+ * 把超长文本按段落边界切成多条，全量保留（不丢尾部）。
+ * 2026-08-29 大 payload 教训：服务端分块按「逐条消息」粒度、单条不拆，
+ * 13202 chars 单条独占 chunk（模板+内容 ≈17000 tokens 超 context_window=10000）
+ * → LLM 输出截断 → 502。客户端先切片，服务端逐条分块、accumulated 合并。
+ * 段落优先（\n\n）→ 行（\n）→ 硬切；每片 ≤ pieceChars。
+ * @param {string} text
+ * @param {number} pieceChars 每片字符上限（默认 2000，实测服务端单条安全值）
+ * @returns {string[]} 切片数组（未超限时 [原文]）
+ */
+export function sliceText(text, pieceChars) {
+  const limit = pieceChars > 0 ? pieceChars : 2000
+  if (!text || text.length <= limit) return [text]
+  const pieces = []
+  let rest = text
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit)
+    let cut = window.lastIndexOf('\n\n')
+    if (cut < limit / 2) cut = window.lastIndexOf('\n')
+    if (cut < limit / 2) cut = limit
+    pieces.push(rest.slice(0, cut))
+    rest = rest.slice(cut).replace(/^[\s\n]+/, '')
+  }
+  if (rest) pieces.push(rest)
+  return pieces
+}
+
 function now() {
   return Date.now();
 }
@@ -55,7 +82,7 @@ export class TidalCoalescer {
     this.queueMaxLen = queueMaxLen > 0 ? Math.trunc(queueMaxLen) : 50;
     this.queue = [];
     this.buckets = new Map(); // key `${userId}\u0000${sessionId}` → {created,last,chars,messages}
-    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, redacted: 0, truncated: 0, dropped: 0, bucketTurns: {} };
+    this.stats = { batches: 0, direct: 0, savedCalls: 0, jsonSanitized: 0, redacted: 0, sliced: 0, dropped: 0, bucketTurns: {} };
     // 同会话同 label 的脱敏告警去重（有界，防长会话泄漏）
     this.redactWarned = new Map();
     this.flushing = 0;
@@ -188,28 +215,26 @@ export class TidalCoalescer {
         assistantContent = a.text;
       }
     }
-    // 单次写入 payload 硬上限（2026-08-29 大 payload 教训）：skill review 子代理
-    // 13202 chars 直写 → 服务端单 chunk 17097 tokens 超 context_window=10000 →
-    // LLM 输出截断 finish_reason=length → 502。截断保头（事实多在开头），
-    // 宁损尾部也不让服务端抽取爆窗；truncated 计数入 totals 可观测。
-    const MAX_WRITE = config.maxWriteChars > 0 ? config.maxWriteChars : 4000;
-    const origChars = userContent.length + assistantContent.length;
-    if (origChars > MAX_WRITE) {
-      const keep = (text) => {
-        if (text.length <= MAX_WRITE / 2) return text
-        return text.slice(0, Math.floor(MAX_WRITE / 2)) + ' …[truncated]'
-      }
-      userContent = keep(userContent)
-      assistantContent = keep(assistantContent)
-      this.stats.truncated += 1
+    // 单条超长消息切片（2026-08-29 大 payload 教训，替代早期的截断保头）：
+    // 服务端分块按「逐条消息」粒度、单条不拆，13202 chars 单条独占 chunk
+    // （模板约 9400t + 内容 7600t ≈ 17000t 超 context_window=10000）→ LLM 输出
+    // 截断 → 502。客户端按段落切片（sliceThreshold 触发、slicePieceChars 每片
+    // 上限，实测服务端单条安全值 ≈2000 chars），全量保留不丢尾部；服务端
+    // 逐条分块提取后 accumulated_memories 合并为一条事实集。
+    const SLICE_AT = config.sliceThreshold > 0 ? config.sliceThreshold : 8000;
+    const PIECE = config.slicePieceChars > 0 ? config.slicePieceChars : 2000;
+    const userParts = userContent.length > SLICE_AT ? sliceText(userContent, PIECE) : [userContent];
+    const assistantParts = assistantContent.length > SLICE_AT ? sliceText(assistantContent, PIECE) : [assistantContent];
+    if (userParts.length + assistantParts.length > 2) {
+      this.stats.sliced += 1
       if (this.log.warn) {
-        this.log.warn('mem0 payload truncated from ' + origChars + ' to <=' + MAX_WRITE +
-          ' chars (session=' + (item.sessionId || '<empty>') + ')')
+        this.log.warn('mem0 payload sliced into user=' + userParts.length + ' assistant=' + assistantParts.length +
+          ' piece(s) (session=' + (item.sessionId || '<empty>') + ')')
       }
     }
     const messages = [
-      { role: 'user', content: userContent },
-      { role: 'assistant', content: assistantContent }
+      ...userParts.map((c) => ({ role: 'user', content: c })),
+      ...assistantParts.map((c) => ({ role: 'assistant', content: c }))
     ];
     const chars = userContent.length + assistantContent.length;
 
@@ -321,7 +346,7 @@ export class TidalCoalescer {
           (trigger ? ', trigger=' + trigger : '') +
           '; totals: batches=' + this.stats.batches + ' savedCalls=' + this.stats.savedCalls +
           ' dropped=' + this.stats.dropped + ' jsonSanitized=' + this.stats.jsonSanitized +
-          ' redacted=' + this.stats.redacted + ' truncated=' + this.stats.truncated + ')');
+          ' redacted=' + this.stats.redacted + ' sliced=' + this.stats.sliced + ')');
       }
     } catch (error) {
       // 放回桶首并保留最早 created（window 语义不因重试漂移）；冲刷期间同 key
