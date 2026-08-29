@@ -172,7 +172,7 @@ function resolveConfigManually(schema, entry) {
     distillMinChars: 500,
     distillInputMaxChars: 8000,
     distillBaseUrl: 'http://mock-distill/v1',
-    distillApiKey: 'devops',
+    distillApiKey: 'test-key',
     distillModel: 'Qwen3.5-9B',
     distillTimeoutMs: 90000,
     distillRetryAfterMs: 20000,
@@ -218,7 +218,7 @@ console.log('== 单元：查询蒸馏 ==')
 {
   const opts = (over) => ({
     enabled: true, minChars: 10, inputMaxChars: 8000,
-    baseUrl: 'http://mock-distill/v1', apiKey: 'devops', model: 'Qwen3.5-9B',
+    baseUrl: 'http://mock-distill/v1', apiKey: 'test-key', model: 'Qwen3.5-9B',
     timeoutMs: 5000, retryAfterMs: 20000, ...over
   })
   const short = await distillQuery('短消息直查', opts({ minChars: 50 }))
