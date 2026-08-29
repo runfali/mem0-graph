@@ -443,10 +443,11 @@ console.log('== 第一步强制搜索提醒 ==')
 console.log('== 启用后：写入链路 ==')
 {
   const [agentW] = await spawnAll(['sess-W'])
-  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住：我的部署端口是 8888' }] } })
-  await emit('session/event', { id: 'sess-W' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，记住了。' }] } })
+  // 夹具 = rc.2 真实嵌套形状（data 层；user/message 的 data 即消息本体）——平铺夹具曾全绿而真机静默死亡（D5）
+  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', seq: 1, time: 1, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '记住：我的部署端口是 8888' }] } })
+  await emit('session/event', { id: 'sess-W' }, { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，记住了。' }] } } })
   // 插件通知不应被当作用户输入
-  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', message: { source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: '文件变更通知' }] } })
+  await emit('session/event', { id: 'sess-W' }, { type: 'user/message', seq: 3, time: 3, data: { role: 'user', source: { kind: 'plugin', plugin: 'x' }, content: [{ type: 'text', text: '文件变更通知' }] } })
   await emitOn(agentW, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
 
   const memCallsBefore = fetchCalls.filter((c) => c.path === '/memories').length
@@ -465,12 +466,26 @@ console.log('== 启用后：写入链路 ==')
   assert.equal(lastBody.metadata.channel, 'dsh'); ok('metadata.channel=dsh 盖章')
 }
 
+console.log('== 兼容：旧平铺载荷仍可捕获（归一化回落回归）==')
+{
+  const [agentF] = await spawnAll(['sess-F'])
+  await emit('session/event', { id: 'sess-F' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '平铺形状的用户问题' }] } })
+  await emit('session/event', { id: 'sess-F' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '平铺形状的助手回答' }] } })
+  await emitOn(agentF, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
+  env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })
+  await new Promise((r) => setTimeout(r, 1300))
+  const body = JSON.parse(fetchCalls.filter((c) => c.path === '/memories').at(-1).body)
+  const joined = body.messages.map((m) => m.content).join('\n')
+  assert.ok(joined.includes('平铺形状的用户问题') && joined.includes('平铺形状的助手回答'), '平铺载荷 user+assistant 均应入队')
+  ok('旧平铺形状兼容（无 data 回落 event 本体）')
+}
+
 console.log('== 端到端：上传脱敏（B 组）==')
 {
   const [agentR] = await spawnAll(['sess-R'])
   const FAKE = 'sk-E2eFake0123456789abcdef'
-  await emit('session/event', { id: 'sess-R' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '记住我的 key：' + FAKE }] } })
-  await emit('session/event', { id: 'sess-R' }, { type: 'assistant/message', turn: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，已记住。' }] } })
+  await emit('session/event', { id: 'sess-R' }, { type: 'user/message', seq: 1, time: 1, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '记住我的 key：' + FAKE }] } })
+  await emit('session/event', { id: 'sess-R' }, { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '好的，已记住。' }] } } })
   await emitOn(agentR, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
   env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })
   await new Promise((r) => setTimeout(r, 1300))
@@ -775,8 +790,8 @@ console.log('== 单元：maxChars 按桶累积判定（C2 回归）==')
 console.log('== 中断轮不入记忆 ==')
 {
   const [agentI] = await spawnAll(['sess-I'])
-  await emit('session/event', { id: 'sess-I' }, { type: 'user/message', message: { source: { kind: 'user' }, content: [{ type: 'text', text: '写一半被打断的问题' }] } })
-  await emit('session/event', { id: 'sess-I' }, { type: 'assistant/message', turn: 1, interrupted: true, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '回答到一半就被用户中止了' }] } })
+  await emit('session/event', { id: 'sess-I' }, { type: 'user/message', seq: 1, time: 1, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '写一半被打断的问题' }] } })
+  await emit('session/event', { id: 'sess-I' }, { type: 'assistant/message', seq: 2, time: 2, data: { turn: 1, step: 1, interrupted: true, message: { source: { kind: 'model' }, content: [{ type: 'text', text: '回答到一半就被用户中止了' }] } } })
   const before = fetchCalls.filter((c) => c.path === '/memories').length
   await emitOn(agentI, 'agent/turn-stopping', { turn: 1, signal: new AbortController().signal })
   env.setScope({ ...env.getScope(), coalesceIdleMs: 500 })

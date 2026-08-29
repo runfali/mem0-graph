@@ -354,8 +354,13 @@ export function apply(ctx, config = {}) {
   // 与 agent/created 闭包里的 sessionId（=agent.id）同源，配对必然命中。
   ctx.effect(() => ctx.on('session/event', (session, event) => {
     try {
+      // 真实载荷（2026-08-29 rc.2 源码 + 真机持久日志双实证，D5 教训）：字段嵌 data 层——
+      // user/message 的 data 即消息本体（append(message) 直存 {role,content,source,id}）；
+      // assistant/message 的 data 为 {turn,step,message,usage?,interrupted?}。
+      // 归一化兼容旧平铺形状（无 data 时回落 event 本体）。
+      const p = (event && event.data) ? event.data : event
       if (event.type === 'user/message') {
-        const message = event.message
+        const message = p.message || p
         // 只认真人输入：plugin 注入的通知与 tool 回执虽是 user 角色，但不是用户的话
         if (!message || !message.source || message.source.kind !== 'user') return
         const text = textOfBlocks(message.content)
@@ -363,14 +368,14 @@ export function apply(ctx, config = {}) {
         lastUserBySession.set(session.id, text)
         capMap(lastUserBySession)
       } else if (event.type === 'assistant/message') {
-        const message = event.message
+        const message = p.message
         if (!message || !message.source || message.source.kind !== 'model') return
         const text = textOfBlocks(message.content)
         if (!text) return
         // 中断的部分输出不是持久对话真相（hermes #15218）：标记随文本入栈，出队时跳过
-        lastAssistantByTurn.set(session.id + '\u0000' + event.turn, {
+        lastAssistantByTurn.set(session.id + '\u0000' + p.turn, {
           text,
-          interrupted: event.interrupted === true
+          interrupted: p.interrupted === true
         })
         capMap(lastAssistantByTurn)
       }
