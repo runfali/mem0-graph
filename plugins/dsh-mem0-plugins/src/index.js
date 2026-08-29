@@ -425,6 +425,10 @@ export function apply(ctx, config = {}) {
         'Most memories are in Chinese — if the user writes in Chinese, you MUST search in Chinese ' +
         '(e.g. 中文关键词). NEVER translate Chinese keywords to English; keep proper nouns verbatim. ' +
         'English-only queries will miss Chinese memories.\n' +
+        'ROUTE BY CONTENT NATURE, NOT VERBS: words like remember/recall/update do not decide ' +
+        'whether to search or store — judge what the content IS (preference / procedure / project ' +
+        'fact / decision => mem0_add; question about past context => mem0_search). If the target ' +
+        'is ambiguous, ask one focusing question first.\n' +
         'Tools: mem0_search to find memories, mem0_add to store durable facts verbatim the ' +
         'moment the user states them, mem0_update and mem0_delete to correct or forget by ID.'
       )
@@ -499,6 +503,7 @@ export function apply(ctx, config = {}) {
       '(preferences, facts, history, people, projects, past decisions). For multi-part or ' +
       'multi-hop questions, call it several times — vary the wording and run follow-up searches ' +
       'on what earlier results reveal; one search is rarely enough. ' +
+      'Memories are historical clues, not proof of the current state — verify against the current code/config before citing. ' +
       'Skip this search ONLY when the entire user message is a bare acknowledgement/greeting/continuation ' +
       'with no question or task of its own (好的、嗯、收到、继续、ok、continue) — any real content requires the search. ' +
       'CRITICAL: query language MUST match user message language — if user writes Chinese, query MUST be Chinese (e.g. 中文关键词), never translate to English; most memories are Chinese so English-only queries will miss.',
@@ -572,7 +577,11 @@ export function apply(ctx, config = {}) {
       'Store a durable fact about the user, verbatim (no LLM extraction). Call this the moment ' +
       'the user states a lasting preference, correction, decision, or personal detail worth ' +
       "recalling on future turns — don't wait to be asked to remember. Skip transient chit-chat " +
-      "and facts you've already stored.",
+      "and facts you've already stored. " +
+      'Judge WHAT to store by content nature, four categories: preferences ("我喜欢中文简短回答"), ' +
+      'procedures ("先测试再提 PR，帮我记住" — store the procedure even though it carries the word "remember"), ' +
+      'project facts ("部署在 X，compose 项目名 Y"), decisions with their reasons. ' +
+      'Do NOT store task-scoped temporary instructions or one-off plans — they serve only the current turn.',
     parameters: {
       content: { type: 'string', required: true, description: 'The fact to store.' }
     },
