@@ -80,6 +80,15 @@ test('env-block: 注释/空行夹缝不打断——累计 5 行仍整体折叠�
   assert.equal(r.text.includes('DB_PASS=secret'), false)
 })
 
+test('env-block: CRLF 行尾照常折叠，原文 \r 保留（2026-08-29 审计 R2 回归）', () => {
+  const crlf = 'DB_HOST=localhost\r\nDB_USER=root\r\nDB_PASS=secret\r\nAPP_ENV=prod\r\nAPP_PORT=8888\r\n'
+  const r = redactSecrets(crlf)
+  assert.equal(r.text.includes('DB_PASS=secret'), false)
+  assert.equal(hitsOf(r, 'env-block'), 1)
+  const plain = redactSecrets(crlf + 'ZZ 普通行')
+  assert.ok(plain.text.endsWith('ZZ 普通行'), '折叠不吞段外普通行')
+})
+
 test('env-block: 累计 4 行不折叠，原文逐行保留（阈值边界）', () => {
   const env4 = 'DB_HOST=localhost\nDB_USER=root\n# 注释夹缝\nDB_PASS=secret\nAPP_ENV=prod'
   const r = redactSecrets(env4)

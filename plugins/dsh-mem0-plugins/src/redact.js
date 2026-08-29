@@ -90,10 +90,13 @@ function foldEnvBlocks(text) {
     envCount = 0
   }
   for (const line of lines) {
-    if (ENV_LINE.test(line)) {
+    // CRLF 兼容（2026-08-29 审计 R2）：JS 正则 . 与 $ 均不跨 \r，'A=1\r' 会判非 env 行
+    // 致 Windows 粘贴的 .env 永不折叠——判定用剥 \r 裸行，回填保留原行不改字节
+    const bare = line.endsWith('\r') ? line.slice(0, -1) : line
+    if (ENV_LINE.test(bare)) {
       run.push(line)
       envCount += 1
-    } else if (run.length && ENV_NEUTRAL.test(line)) {
+    } else if (run.length && ENV_NEUTRAL.test(bare)) {
       run.push(line)
     } else {
       flush()
