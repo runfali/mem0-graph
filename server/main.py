@@ -197,6 +197,13 @@ LLM_CONFIG = {
 }
 if OPENAI_BASE_URL:
     LLM_CONFIG["openai_base_url"] = OPENAI_BASE_URL
+# Primary layer's reasoning effort (mirrors MEM0_LLM_FALLBACK*_REASONING_EFFORT).
+# Needed for reasoning-capable OpenAI-compatible upstreams whose model name does not
+# match mem0's o1/o3/gpt-5 heuristic — that heuristic only decides *which* param set
+# is sent, and _get_common_params already forwards a configured reasoning_effort.
+_llm_reasoning_effort = os.environ.get("MEM0_LLM_REASONING_EFFORT")
+if _llm_reasoning_effort:
+    LLM_CONFIG["reasoning_effort"] = _llm_reasoning_effort
 _llm_fallbacks = build_llm_fallbacks_from_env(os.environ)
 
 EMBEDDER_API_KEY = os.environ.get("EMBEDDER_API_KEY", OPENAI_API_KEY)
