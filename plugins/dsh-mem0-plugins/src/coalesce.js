@@ -411,6 +411,24 @@ export class TidalCoalescer {
             (bucket.sessionId || '<empty>') + ', turns=' + turns + '): ' + String((error && error.message) || error));
         }
       } else if (bucket.retries <= MAX_FLUSH_RETRIES) {
+        // 超时类毒桶裁剪（2026-08-29 一轮审计 P2-3）：timeout 错误无 status，
+        // 存活上限对「服务端活着但单请求必然超时」的大桶永远不生效；而退避
+        // （30s→5min）大于熔断冷却（120s）会让跨冷却重置把 retries 永远钉在
+        // 1/20——原始毒桶事故的残留变体（Node24 undici 300s headersTimeout
+        // 硬顶，requestTimeoutMs 调再大也无济于事）。判定与 backend.js 同源
+        // （/timed out/ 只命中超时包装文案，fetch failed/ECONNREFUSED 不命中）。
+        // 超时即把桶裁到最近 20 轮：payload 变小后服务端可在超时窗内跑完，
+        // 收敛退出死循环；裁掉的轮次计入 dropped，原文仍在 dsh 会话日志可回捞。
+        const timedOut = typeof (error && error.message) === 'string' && /timed out/i.test(String(error.message));
+        if (timedOut && bucket.messages.length > 40) {
+          const removed = bucket.messages.splice(0, bucket.messages.length - 40);
+          bucket.chars = bucket.messages.reduce((n, m) => n + String((m && m.content) || '').length, 0);
+          this.stats.dropped += removed.length / 2;
+          if (this.log.warn) {
+            this.log.warn('mem0 coalesced flush timed out, trimmed bucket to last 20 turn(s) (session=' +
+              (bucket.sessionId || '<empty>') + ', removed=' + removed.length + ' message(s)), raw text still in dsh session log');
+          }
+        }
         // 指数退避（30s→5min 封顶）：网络级失败往往意味着服务端还在慢慢跑这一单，
         // 立刻重投只是叠一个同样的长请求。短路不额外退避（熔断自有冷却节奏）。
         const backoffMs = shortCircuited ? 0 : Math.min(30000 * 2 ** Math.max(0, bucket.retries - 1), 300000);

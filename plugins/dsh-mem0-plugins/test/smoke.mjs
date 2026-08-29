@@ -952,6 +952,54 @@ console.log('== 单元：毒桶存活上限 + 失败退避（2026-08-29 事故�
   assert.equal(tries, 2, '退避到期后应重试'); ok('退避到期后照常重试')
 }
 
+console.log('== 单元：超时类毒桶裁剪（2026-08-29 一轮审计 P2-3）==')
+{
+  const { TidalCoalescer } = await import('../src/coalesce.js')
+  const holdBig = () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 200, maxChars: 1000000, fastpathChars: 200000, cooldownMs: 120000 })
+  const fillTurns = (q, n) => { for (let i = 0; i < n; i++) q.route({ userId: 'u', sessionId: 's', userContent: '问' + i, assistantContent: '答' + i }) }
+
+  // A) timeout 包装错误 + 30 轮 → 裁到最近 20 轮（40 条消息），裁掉 10 轮计 dropped
+  let attempts = 0
+  const q3 = new TidalCoalescer({
+    resolve: holdBig,
+    addFn: async () => { attempts += 1; throw new Error('mem0 server unreachable at http://x (mem0 request timed out after 420000 ms)') },
+    log: {}
+  })
+  fillTurns(q3, 30)
+  assert.equal(q3.buckets.get('u\u0000s').messages.length, 60)
+  await q3.flushBucket('u\u0000s', 'test')
+  const b3 = q3.buckets.get('u\u0000s')
+  assert.ok(b3, '超时失败后桶应保留待重试')
+  assert.equal(b3.messages.length, 40, '超时毒桶应裁到 40 条消息（20 轮）')
+  assert.equal(q3.stats.dropped, 10, '裁掉的 10 轮应计入 dropped')
+  assert.equal(b3.chars, 120, 'chars 应按剩余消息重算（后 20 轮每条 3 字 × 40 条）')
+  await q3.flushBucket('u\u0000s', 'test')
+  assert.equal(q3.buckets.get('u\u0000s').messages.length, 40, '已裁到 20 轮后不再继续裁')
+  assert.equal(attempts, 2, '两次都真实发起了冲刷'); ok('超时毒桶裁到 20 轮并收敛')
+
+  // B) 网络级失败（无 timed out 文案）→ 不裁剪（宕机不丢语义不变）
+  const q4 = new TidalCoalescer({
+    resolve: holdBig,
+    addFn: async () => { throw new Error('mem0 server unreachable at http://x (fetch failed)') },
+    log: {}
+  })
+  fillTurns(q4, 30)
+  await q4.flushBucket('u\u0000s', 'test')
+  assert.equal(q4.buckets.get('u\u0000s').messages.length, 60, '宕机类失败不得裁桶')
+  assert.equal(q4.stats.dropped, 0); ok('网络级失败不裁剪（宕机不丢）')
+
+  // C) 超时但桶很小（≤20 轮）→ 无需裁剪
+  const q5 = new TidalCoalescer({
+    resolve: holdBig,
+    addFn: async () => { throw new Error('mem0 server unreachable at http://x (mem0 request timed out after 420000 ms)') },
+    log: {}
+  })
+  fillTurns(q5, 3)
+  await q5.flushBucket('u\u0000s', 'test')
+  assert.equal(q5.buckets.get('u\u0000s').messages.length, 6, '小桶超时不裁')
+  assert.equal(q5.stats.dropped, 0); ok('小桶超时不受影响')
+}
+
 console.log('== 中断轮不入记忆 ==')
 {
   const [agentI] = await spawnAll(['sess-I'])
