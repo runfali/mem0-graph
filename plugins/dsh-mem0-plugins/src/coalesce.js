@@ -32,12 +32,13 @@ export function looksLikeJson(text) {
 export const JSON_PLACEHOLDER = '<JSON 结构化数据，已省略>';
 
 /**
- * 潮浪桶最长存活时间：超过即丢弃并计数。
+ * 潮浪桶最长存活时间：超过且**服务端明确拒绝过**（HTTP 状态码）才丢弃并计数。
  * 2026-08-29 毒桶事故：某轮对话（2166 chars）在服务端必然抽取失败
  * （分块 + 推理模型把 max_tokens 烧光 → finish_reason=length → 502），
  * 而「跨冷却新故障段重置 retries」的防误丢设计让 retries 永远停在 1/20，
  * 该桶每 5-10 分钟重投一次、每次占用三层 LLM 各 120s，无限循环。
- * retries 防的是「连续快速失败」，时间上限防的是「确定性坏数据」——两者互补。
+ * retries 防的是「连续快速失败」，时间上限防的是「永久性坏数据」——两者互补。
+ * 连接级失败（宕机/超时）不计龄：那不是这条数据的错，按龄丢就是拿防刷屏换丢记忆。
  * 可由 resolveConfig().maxBucketAgeMs 覆盖（毫秒）。
  */
 export const DEFAULT_MAX_BUCKET_AGE_MS = 30 * 60 * 1000;
@@ -383,14 +384,20 @@ export class TidalCoalescer {
       const ageMs = Date.now() - bucket.created;
       const maxAgeCfg = this.resolveConfig().maxBucketAgeMs;
       const maxAgeMs = maxAgeCfg > 0 ? Math.trunc(maxAgeCfg) : DEFAULT_MAX_BUCKET_AGE_MS;
-      if (ageMs > maxAgeMs) {
+      // 存活上限只针对「服务端真的处理过并拒绝」的确定性毒桶（Mem0HttpError 带 status）。
+      // 纯连接级失败（服务端宕机、或还在慢慢跑这一单）不是这条数据的错——若也按年龄丢，
+      // 宕机 30 分钟就会误杀一批本可成功的记忆，那是拿"防刷屏"换"丢记忆"，方向错了。
+      const serverRejected = Number.isInteger(error && error.status);
+      if (serverRejected && ageMs > maxAgeMs) {
         // retries 管「连续快速失败」，存活时间管「确定性毒桶」：跨冷却重置让 retries
         // 永远停在 1/20，服务端对该载荷必然失败时就会无限重投（2026-08-29 事故）。
+        // 丢的是「抽取从未成功过」的载荷，不是已入库的记忆；原文仍在 dsh 会话日志里，
+        // 按 sessionId 可回捞重放。
         this.stats.dropped += turns;
         if (this.log.warn) {
-          this.log.warn('mem0 coalesced flush dropped as stale after ' + Math.round(ageMs / 60000) +
-            ' min / ' + bucket.retries + ' attempt(s) (session=' + (bucket.sessionId || '<empty>') +
-            ', turns=' + turns + '): ' + String((error && error.message) || error));
+          this.log.warn('mem0 coalesced flush dropped as rejected-payload after ' + Math.round(ageMs / 60000) +
+            ' min / ' + bucket.retries + ' attempt(s), raw text still in dsh session log (session=' +
+            (bucket.sessionId || '<empty>') + ', turns=' + turns + '): ' + String((error && error.message) || error));
         }
       } else if (bucket.retries <= MAX_FLUSH_RETRIES) {
         // 指数退避（30s→5min 封顶）：网络级失败往往意味着服务端还在慢慢跑这一单，

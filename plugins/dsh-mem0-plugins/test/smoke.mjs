@@ -877,17 +877,31 @@ console.log('== 单元：毒桶存活上限 + 失败退避（2026-08-29 事故�
   let attempts = 0
   const q = new (await import('../src/coalesce.js')).TidalCoalescer({
     resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 30, maxBucketAgeMs: 1 }),
-    addFn: async () => { attempts += 1; throw new Error('LLM extraction failed') },
+    addFn: async () => { attempts += 1; const e = new Error('mem0 /memories returned HTTP 502'); e.status = 502; throw e },
     log: {}
   })
   q.enqueue({ userId: 'u', sessionId: 'sPoison', userContent: '必然抽取失败的一轮', assistantContent: '答' })
   q.drain()
   await new Promise((r) => setTimeout(r, 10))                      // 让桶龄超过 maxBucketAgeMs=1
   await q.flushDue(Date.now() + 60000); await settle()
-  assert.equal(q.buckets.size, 0, '超龄桶必须被丢'); ok('毒桶按存活上限落地，不再挂回')
+  assert.equal(q.buckets.size, 0, '服务端明确拒绝且超龄→必须落地'); ok('毒桶按存活上限落地，不再挂回')
   assert.equal(q.stats.dropped, 1, 'dropped 计数'); ok('超龄丢弃有计数')
   await q.flushDue(Date.now() + 60000); await settle()
   assert.equal(attempts, 1, '丢弃后不再重投'); ok('丢弃后彻底停止重投（无无限循环）')
+
+  // A2) 反向保险：纯连接级失败（服务端宕机/还在跑）不是数据的错，超龄也绝不丢
+  let netTries = 0
+  const qn = new (await import('../src/coalesce.js')).TidalCoalescer({
+    resolve: () => ({ enabled: true, idleMs: 20, windowMs: 15000, maxTurns: 5, maxChars: 4000, fastpathChars: 2000, cooldownMs: 30, maxBucketAgeMs: 1 }),
+    addFn: async () => { netTries += 1; throw new Error('mem0 server unreachable at http://127.0.0.1:8888 (fetch failed)') },
+    log: {}
+  })
+  qn.enqueue({ userId: 'u', sessionId: 'sDown', userContent: '宕机期间的对话', assistantContent: '答' })
+  qn.drain()
+  await new Promise((r) => setTimeout(r, 10))
+  for (let i = 0; i < 6; i++) { await qn.flushDue(Date.now() + 600000); await settle() }   // 时钟拨到 10 分钟后
+  assert.equal(qn.stats.dropped, 0, '宕机不得丢记忆'); ok('连接级失败超龄仍存活（宕机 30 分钟不误杀）')
+  assert.ok(netTries >= 2, '宕机期间仍在重试: ' + netTries); ok('宕机期间持续重试')
 
   // B) 退避窗口：网络级失败后 30s 内不得重投（服务端可能还在慢慢跑同一单）
   let tries = 0
