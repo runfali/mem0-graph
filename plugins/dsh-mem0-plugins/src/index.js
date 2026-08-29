@@ -74,6 +74,9 @@ export const Config = z.object({
   // ≤slicePieceChars 的多条消息，全量保留；服务端逐条分块、accumulated 合并。
   sliceThreshold: z.number().step(1).min(200).max(200000).default(8000),
   slicePieceChars: z.number().step(1).min(200).max(200000).default(2000),
+  // 潮浪桶存活上限（2026-08-29 毒桶事故）：超龄且「服务端明确拒绝过」才丢弃；
+  // 连接级失败不计龄（宕机不丢）。此前注释称可配置但三处接线缺失，设置页调不到。
+  maxBucketAgeMs: z.number().step(1).min(60000).max(7200000).default(1800000),
   queueMaxLen: z.number().step(1).min(5).max(1000).default(50),
   breakerThreshold: z.number().step(1).min(1).max(100).default(5),
   breakerCooldownMs: z.number().step(1).min(1000).max(3600000).default(120000),
@@ -196,6 +199,7 @@ export function apply(ctx, config = {}) {
       fastpathChars: clampInt(value.fastpathChars, 200, 200000, 2000),
       sliceThreshold: clampInt(value.sliceThreshold, 200, 200000, 8000),
       slicePieceChars: clampInt(value.slicePieceChars, 200, 200000, 2000),
+      maxBucketAgeMs: clampInt(value.maxBucketAgeMs, 60000, 7200000, 1800000),
       queueMaxLen: clampInt(value.queueMaxLen, 5, 1000, 50),
       breakerThreshold: clampInt(value.breakerThreshold, 1, 100, 5),
       breakerCooldownMs: clampInt(value.breakerCooldownMs, 1000, 3600000, 120000),
@@ -344,6 +348,7 @@ export function apply(ctx, config = {}) {
         fastpathChars: s.fastpathChars,
         sliceThreshold: s.sliceThreshold,
         slicePieceChars: s.slicePieceChars,
+        maxBucketAgeMs: s.maxBucketAgeMs,
         queueMaxLen: s.queueMaxLen,
         // 供 coalescer 区分「同段连续故障」与「跨冷却的新故障段」：
         // 半开窗口的真实失败间隔≈冷却时长，超过即重置重试计数

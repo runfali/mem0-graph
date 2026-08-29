@@ -89,6 +89,7 @@ dsh plugin --profile web remove dsh-mem0-plugins
 | `fastpathChars` | `2000` | 单轮超过该长度直接落库 |
 | `sliceThreshold` | `8000` | 单条消息超过该长度按段落切片（服务端分块按消息粒度、单条不拆，超长单条会撑爆抽取窗口） |
 | `slicePieceChars` | `2000` | 切片后每片字符上限（实测服务端单条安全值 ≈2000）；切片全量保留、服务端分块提取后合并 |
+| `maxBucketAgeMs` | `1800000` | 潮浪桶存活上限（30 分钟）：超龄且「服务端明确拒绝过」（HTTP 状态码）才丢弃；连接级失败（宕机/超时）不计龄 |
 | `redactEnabled` | `true` | 写回载荷上传前脱敏（命中替换为 `[REDACTED:*]` 标记；可关） |
 | `feedbackEnabled` | `true` | update/delete 成功后上报 evolve 反馈（可关） |
 

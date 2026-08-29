@@ -184,6 +184,9 @@ function resolveConfigManually(schema, entry) {
     coalesceMaxTurns: 5,
     coalesceMaxChars: 4000,
     fastpathChars: 2000,
+    sliceThreshold: 8000,
+    slicePieceChars: 2000,
+    maxBucketAgeMs: 1800000,
     queueMaxLen: 50,
     breakerThreshold: 5,
     breakerCooldownMs: 120000,
@@ -334,6 +337,9 @@ console.log('== 单元：琐碎输入守卫 ==')
 console.log('== Host apply 全链路 ==')
 const env = makeCtx({})
 apply(env.ctx, { host: 'http://mock:9999' })
+
+// 桶存活上限接线（2026-08-29 一轮审计 P3-1）：schema 默认值进 scope、spec() 透传
+assert.equal(env.getScope().maxBucketAgeMs, 1800000, 'maxBucketAgeMs 默认值应进 scope')
 
 const emit = (event, ...args) => Promise.all((env.listeners.get(event) || []).map((cb) => cb(...args)))
 const emitOn = (actx, event, ...args) => Promise.all((actx.listeners.get(event) || []).map((cb) => cb(...args)))
