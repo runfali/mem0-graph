@@ -1006,6 +1006,50 @@ console.log('== 单元：超时类毒桶裁剪（2026-08-29 一轮审计 P2-3）
   assert.equal(q5.stats.dropped, 0); ok('小桶超时不受影响')
 }
 
+console.log('== 单元：P3 三残留修复（2026-08-29 二次）==')
+{
+  const { TidalCoalescer, sliceText } = await import('../src/coalesce.js')
+  const holdBig = () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 200, maxChars: 1000000, fastpathChars: 200000, cooldownMs: 120000 })
+  const fillTurns = (q, n) => { for (let i = 0; i < n; i++) q.route({ userId: 'u', sessionId: 's', userContent: '问' + i, assistantContent: '答' + i }) }
+
+  // F5a) dispose 冲刷失败 → 诚实丢弃（不挂回死数据），dropped 计数
+  const qd = new TidalCoalescer({ resolve: holdBig, addFn: async () => { throw new Error('mem0 server unreachable at http://x (fetch failed)') }, log: {} })
+  fillTurns(qd, 3)
+  await qd.flushAll('dispose')
+  assert.equal(qd.buckets.size, 0, 'dispose 失败桶不得挂回')
+  assert.equal(qd.stats.dropped, 3, 'dispose 失败 3 轮计入 dropped'); ok('dispose 失败诚实丢弃')
+
+  // F5b) 小桶（≤20轮）超时 + 超龄 → 丢弃线兜底（退出无限退避）
+  const qt = new TidalCoalescer({ resolve: holdBig, addFn: async () => { throw new Error('mem0 server unreachable at http://x (mem0 request timed out after 420000 ms)') }, log: {} })
+  fillTurns(qt, 3)
+  for (const b of qt.buckets.values()) b.created = Date.now() - 2 * 60 * 60 * 1000 // 桶龄 2h > 30min
+  await qt.flushBucket('u\u0000s', 'test')
+  assert.equal(qt.buckets.size, 0, '超时+超龄小桶应被丢弃线兜住')
+  assert.equal(qt.stats.dropped, 3); ok('超时超龄小桶丢弃线兜底')
+
+  // F5c) 未超龄的超时小桶照旧退避（宕机/慢服务不丢）
+  const qn = new TidalCoalescer({ resolve: holdBig, addFn: async () => { throw new Error('mem0 server unreachable at http://x (mem0 request timed out after 420000 ms)') }, log: {} })
+  fillTurns(qn, 3)
+  await qn.flushBucket('u\u0000s', 'test')
+  assert.ok(qn.buckets.get('u\u0000s'), '未超龄超时小桶保留待重试')
+  assert.equal(qn.stats.dropped, 0); ok('未超龄超时小桶不受影响')
+
+  // F6) REDACTED 标记落在硬切边界 → 整标记让给下一片，不拆半
+  const prefix = 'a'.repeat(1990)
+  const marked = prefix + ' [REDACTED:openai-key] 尾部内容' + 'b'.repeat(40)
+  const mp = sliceText(marked, 1998)
+  const joined = mp.join('')
+  const diffLen = marked.length - joined.length
+  assert.ok(diffLen >= 0 && diffLen <= 2, '仅边界空白可剥离，无字符丢失（diff=' + diffLen + '）')
+  assert.ok(joined.includes('[REDACTED:openai-key]'), '标记完整存活于某一片')
+  for (const p of mp) {
+    const opens = (p.match(/\[REDACTED:/g) || []).length
+    const closes = (p.match(/\]/g) || []).length
+    assert.ok(opens === closes, '标记必须整片出现（不拆半）: ' + JSON.stringify(p.slice(-40)))
+  }
+  ok('REDACTED 标记不跨片拆半')
+}
+
 console.log('== 中断轮不入记忆 ==')
 {
   const [agentI] = await spawnAll(['sess-I'])

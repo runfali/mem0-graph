@@ -70,6 +70,17 @@ export function sliceText(text, pieceChars) {
     let cut = window.lastIndexOf('\n\n')
     if (cut < limit / 2) cut = window.lastIndexOf('\n')
     if (cut < limit / 2) cut = limit
+    // REDACTED 标记完整性（2026-08-29 一轮审计 P3-2）：redact 先于切片，
+    // 标记 [REDACTED:label] 落在硬切边界会被拆成两半——密文本体已被替换无泄漏，
+    // 但两半各自成片后提取语义残缺。对全文定位 cut 前最近的标记起点（opening
+    // 自身被截也能定位），cut 落在标记区间内则回退到起点，整标记让给下一片。
+    if (cut === limit) {
+      const open = rest.lastIndexOf('[REDACTED:', cut - 1)
+      if (open > 0 && cut - open < 64) {
+        const close = rest.indexOf(']', open + 1)
+        if (cut < (close >= 0 ? close : open + 24)) cut = open
+      }
+    }
     // 码点安全：cut-1 是高代理且 cut 是低代理 → 边界切半了一对，回退让整码点进下一片
     // （回退后 cut 不得为 0——空片 + rest 原样 = 死循环；实际 limit≥200 不会触底）
     if (cut > 1 && cut < rest.length) {
@@ -399,7 +410,14 @@ export class TidalCoalescer {
       // 纯连接级失败（服务端宕机、或还在慢慢跑这一单）不是这条数据的错——若也按年龄丢，
       // 宕机 30 分钟就会误杀一批本可成功的记忆，那是拿"防刷屏"换"丢记忆"，方向错了。
       const serverRejected = Number.isInteger(error && error.status);
-      if (serverRejected && ageMs > maxAgeMs) {
+      // timeout 判定提升到分支外（2026-08-29 P3-3）：与 backend.js 同源，网络级
+      // 失败（fetch failed/ECONNREFUSED）不命中。
+      const timedOut = typeof (error && error.message) === 'string' && /timed out/i.test(String(error.message));
+      // 丢弃线（2026-08-29 P3-3 扩展）：服务端明确拒绝照旧；timeout 超龄也丢——
+      // timeout 意味着服务端收到了且在跑、但 300s 窗口跑不完，超龄说明该载荷在
+      // 当前服务端状态下确实无望，无限退避只是每 5min 交一次有界成本；丢的是
+      // 「抽取从未成功过」的载荷，原文仍可按 sessionId 从 dsh 会话日志回捞。
+      if ((serverRejected || timedOut) && ageMs > maxAgeMs) {
         // retries 管「连续快速失败」，存活时间管「确定性毒桶」：跨冷却重置让 retries
         // 永远停在 1/20，服务端对该载荷必然失败时就会无限重投（2026-08-29 事故）。
         // 丢的是「抽取从未成功过」的载荷，不是已入库的记忆；原文仍在 dsh 会话日志里，
@@ -410,16 +428,23 @@ export class TidalCoalescer {
             ' min / ' + bucket.retries + ' attempt(s), raw text still in dsh session log (session=' +
             (bucket.sessionId || '<empty>') + ', turns=' + turns + '): ' + String((error && error.message) || error));
         }
+      } else if (trigger === 'dispose') {
+        // dispose 兜底诚实化（2026-08-29 P3-1）：dispose 后没有下一次 tick，
+        // 失败桶挂回 = 永远无人再冲的死数据却伪装成「待重试」；直接计数丢弃并
+        // 说明去向（原文在 dsh 会话日志），保持可观测诚实。
+        this.stats.dropped += turns;
+        if (this.log.warn) {
+          this.log.warn('mem0 coalesced dispose flush failed, dropping bucket (session=' +
+            (bucket.sessionId || '<empty>') + ', turns=' + turns + '): ' + String((error && error.message) || error));
+        }
       } else if (bucket.retries <= MAX_FLUSH_RETRIES) {
         // 超时类毒桶裁剪（2026-08-29 一轮审计 P2-3）：timeout 错误无 status，
         // 存活上限对「服务端活着但单请求必然超时」的大桶永远不生效；而退避
         // （30s→5min）大于熔断冷却（120s）会让跨冷却重置把 retries 永远钉在
         // 1/20——原始毒桶事故的残留变体（Node24 undici 300s headersTimeout
-        // 硬顶，requestTimeoutMs 调再大也无济于事）。判定与 backend.js 同源
-        // （/timed out/ 只命中超时包装文案，fetch failed/ECONNREFUSED 不命中）。
+        // 硬顶，requestTimeoutMs 调再大也无济于事）。
         // 超时即把桶裁到最近 20 轮：payload 变小后服务端可在超时窗内跑完，
         // 收敛退出死循环；裁掉的轮次计入 dropped，原文仍在 dsh 会话日志可回捞。
-        const timedOut = typeof (error && error.message) === 'string' && /timed out/i.test(String(error.message));
         if (timedOut && bucket.messages.length > 40) {
           const removed = bucket.messages.splice(0, bucket.messages.length - 40);
           bucket.chars = bucket.messages.reduce((n, m) => n + String((m && m.content) || '').length, 0);
