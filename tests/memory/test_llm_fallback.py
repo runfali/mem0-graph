@@ -289,7 +289,7 @@ def test_build_llm_fallbacks_inherit_sampling_params(monkeypatch):
     monkeypatch.setattr(memory_main.LlmFactory, "create", staticmethod(fake_create))
     cfg = LlmConfig(
         provider="openai",
-        config={"model": "main", "temperature": 0.1, "max_tokens": 8192},
+        config={"model": "main", "temperature": 0.1, "max_tokens": 8192, "reasoning_effort": "none"},
         fallbacks=[
             LlmConfig(provider="openai", config={"model": "fb-missing"}),
             LlmConfig(provider="anthropic", config={"model": "fb-explicit", "max_tokens": 1024}),
@@ -300,7 +300,9 @@ def test_build_llm_fallbacks_inherit_sampling_params(monkeypatch):
 
     assert isinstance(llm, FallbackLLM)
     assert captured[1]["temperature"] == 0.1 and captured[1]["max_tokens"] == 8192  # 继承
+    assert captured[1]["reasoning_effort"] == "none"  # L1 跟随 L0：思考模型缺此参数输出全进 reasoning_content
     assert captured[2]["max_tokens"] == 1024 and captured[2]["temperature"] == 0.1  # 显式优先、缺的键仍继承
+    assert captured[2]["reasoning_effort"] == "none"  # L2 同样跟随 L0
 
 
 def test_build_llm_skips_inheritance_when_primary_lacks_keys(monkeypatch):
@@ -317,7 +319,7 @@ def test_build_llm_skips_inheritance_when_primary_lacks_keys(monkeypatch):
         config={"model": "main"},
         fallbacks=[
             LlmConfig(provider="deepseek", config={"model": "fb1"}),
-            LlmConfig(provider="openai", config={"model": "fb2", "temperature": None}),
+            LlmConfig(provider="openai", config={"model": "fb2", "temperature": None, "reasoning_effort": None}),
         ],
     )
 
@@ -325,4 +327,6 @@ def test_build_llm_skips_inheritance_when_primary_lacks_keys(monkeypatch):
 
     assert isinstance(llm, FallbackLLM)
     assert "temperature" not in captured[1] and "max_tokens" not in captured[1]
+    assert "reasoning_effort" not in captured[1]
     assert "temperature" not in captured[2] and "max_tokens" not in captured[2]
+    assert "reasoning_effort" not in captured[2]

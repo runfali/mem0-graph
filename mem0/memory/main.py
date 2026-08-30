@@ -28,7 +28,7 @@ from mem0.configs.prompts import (
 )
 from mem0.exceptions import LLMError
 from mem0.exceptions import ValidationError as Mem0ValidationError
-from mem0.llms.fallback import FallbackLLM
+from mem0.llms.fallback import FallbackLLM, inherit_primary_config
 from mem0.memory.base import MemoryBase
 from mem0.memory.notices import (
     PERFORMANCE_SLOW_QUERY_THRESHOLD_SECONDS,
@@ -849,21 +849,13 @@ def _build_llm(llm_config):
     primary = LlmFactory.create(llm_config.provider, llm_config.config)
     if not llm_config.fallbacks:
         return primary
-    # 采样/输出参数兜底层显式配置优先，缺省继承主层，避免切层后 max_tokens 骤降库默认 2000 触发截断
-    inherit_keys = ("temperature", "max_tokens")
-    primary_cfg = llm_config.config or {}
-    fallbacks = []
-    for fb in llm_config.fallbacks:
-        fb_cfg = dict(fb.config or {})
-        for key in inherit_keys:
-            if fb_cfg.get(key) is not None:
-                continue
-            inherited = primary_cfg.get(key)
-            if inherited is not None:
-                fb_cfg[key] = inherited
-            else:
-                fb_cfg.pop(key, None)  # 主层也没有：剥掉显式 None，回落库默认
-        fallbacks.append(LlmFactory.create(fb.provider, fb_cfg))
+    # 采样/输出参数兜底层跟随主层(L0)：显式配置优先，缺省继承
+    # （temperature/max_tokens/reasoning_effort），避免切层后 max_tokens 骤降库默认
+    # 2000 触发截断、或推理模型缺 reasoning_effort 输出进 reasoning_content 导致 results=0
+    fallbacks = [
+        LlmFactory.create(fb.provider, inherit_primary_config(llm_config.config, fb.config))
+        for fb in llm_config.fallbacks
+    ]
     return FallbackLLM(primary, fallbacks, layer_timeout=llm_config.layer_timeout)
 
 

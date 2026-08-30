@@ -44,7 +44,7 @@ from mem0.graphs.tools import (
     RELATIONS_TOOL,
 )
 from mem0.graphs.utils import EXTRACT_RELATIONS_PROMPT, get_invalidate_messages
-from mem0.llms.fallback import FallbackLLM
+from mem0.llms.fallback import FallbackLLM, inherit_primary_config
 from mem0.utils.factory import EmbedderFactory, LlmFactory
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,11 @@ def _build_llm(provider, llm_config):
     primary = LlmFactory.create(provider, llm_config.config)
     if not llm_config.fallbacks:
         return primary
-    fallbacks = [LlmFactory.create(fb.provider, fb.config) for fb in llm_config.fallbacks]
+    # 同 memory/main.py.__build_llm：兜底层跟随主层(L0)采样/输出参数（含 reasoning_effort）
+    fallbacks = [
+        LlmFactory.create(fb.provider, inherit_primary_config(llm_config.config, fb.config))
+        for fb in llm_config.fallbacks
+    ]
     return FallbackLLM(primary, fallbacks, layer_timeout=llm_config.layer_timeout)
 
 

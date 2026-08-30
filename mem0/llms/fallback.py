@@ -8,6 +8,26 @@ logger = logging.getLogger(__name__)
 _MAX_LAYER_RETRIES = 3
 _RETRY_SLEEP_SECONDS = 0.5
 
+# 兜底层跟随主层(L0)的采样/输出参数：缺省即继承，显式配置优先。
+# reasoning_effort 缺失会让推理模型(如 llama.cpp Qwen3.8)把输出全部写入
+# reasoning_content、content 恒空 → 提取 results=0，必须随层继承。
+FALLBACK_INHERIT_KEYS = ("temperature", "max_tokens", "reasoning_effort")
+
+
+def inherit_primary_config(primary_config, fallback_config):
+    """兜底层缺省参数继承主层；显式非 None 值优先，None/缺失回落主层，主层也无则剥掉。"""
+    fb = dict(fallback_config or {})
+    primary = primary_config or {}
+    for key in FALLBACK_INHERIT_KEYS:
+        if fb.get(key) is not None:
+            continue
+        inherited = primary.get(key)
+        if inherited is not None:
+            fb[key] = inherited
+        else:
+            fb.pop(key, None)
+    return fb
+
 
 class FallbackLLM(LLMBase):
     """

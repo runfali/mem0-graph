@@ -84,6 +84,34 @@ def test_graph_llm_uses_global_fallbacks_when_graph_store_llm_unset(patched):
     assert providers == ["openai", "anthropic", "deepseek"]
 
 
+def test_graph_llm_fallbacks_inherit_primary_sampling_params(patched):
+    llm_create = patched
+    captured = []
+
+    def capturing(provider, config):
+        captured.append(dict(config or {}))
+        return mock.MagicMock()
+
+    llm_create.side_effect = capturing
+    cfg = _memory_config(
+        graph_llm=_llm_cfg(
+            "openai", "gpt-4o",
+            fallbacks=[("anthropic", "claude-3-5"), ("deepseek", "deepseek-chat")],
+        )
+    )
+    cfg.graph_store.llm.config["temperature"] = 0.1
+    cfg.graph_store.llm.config["max_tokens"] = 8192
+    cfg.graph_store.llm.config["reasoning_effort"] = "none"
+
+    graph = gm.MemoryGraph(cfg)
+
+    assert isinstance(graph.llm, FallbackLLM)
+    assert captured[1]["temperature"] == 0.1 and captured[1]["max_tokens"] == 8192
+    assert captured[1]["reasoning_effort"] == "none"
+    assert captured[2]["temperature"] == 0.1 and captured[2]["max_tokens"] == 8192
+    assert captured[2]["reasoning_effort"] == "none"
+
+
 def test_graph_llm_wires_layer_timeout(patched):
     llm_create = patched
     llm_create.side_effect = lambda provider, config: mock.MagicMock()
