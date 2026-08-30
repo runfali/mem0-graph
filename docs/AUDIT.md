@@ -37,3 +37,49 @@
 1. ~~dispose 冲刷遇失败桶挂回~~ → 已修：dispose 后无下一 tick，挂回是伪装成「待重试」的死数据；改为诚实丢弃 + dropped 计数 + warn 说明去向（原文在 dsh 会话日志）。smoke：dispose 失败桶不挂回、dropped=3。
 2. ~~`[REDACTED:*]` 标记可被硬切拆开~~ → 已修：sliceText 对全文定位 cut 前最近标记起点（opening 自身被截也能定位），cut 落标记区间内则整标记让给下一片。密文本体本已被替换（无泄漏），修复的是跨片提取语义残缺。smoke：标记不跨片拆半；旧切点反向验证拆半必现。
 3. ~~≤20 轮小桶超时退避循环~~ → 已修：丢弃线扩展为「服务端明确拒绝 **或** 超时」且超龄（>maxBucketAgeMs）即丢——timeout=服务端收到且在跑但 300s 窗口跑不完，超龄说明该载荷当前状态下无望；未超龄照旧退避，宕机（fetch failed）不计入，宕机不丢语义不变。smoke：超时+超龄小桶兜底丢弃、未超龄不受影响。
+
+---
+
+# 今日修改专项审计 — 2026-08-31
+
+审计对象（今天全部改动面）：
+1. **fallback 继承修复**（c2e413a）：`mem0/llms/fallback.py`（FALLBACK_INHERIT_KEYS + inherit_primary_config）、`mem0/memory/main.py::_build_llm`、`mem0/graphs/falkordb/graph_memory.py::_build_llm`、测试 ×2 文件。
+2. **配置变更**（生产 only，不入 git）：server/.env（MEM0_LLM_MAX_TOKENS 4096→8192、新增 MEM0_LLM_FALLBACK_TIMEOUT=180）、server/config.json（layer_timeout 120.0→180.0）。
+3. 配套回归测试（tests/utils/test_factory.py ×2、tests/memory/test_llm_fallback.py ×1）。
+
+方法：图谱刷新（code-review-graph 5132 rows 健康）→ 全 diff 通读 → 契约级验证（LlmConfig dict 约束、factory create 三路径、各 provider config `__init__` 签名实证、update_config 合并且保留 layer_timeout）→ 换角度复核。
+
+## 第一轮 — 发现与修复
+
+| 级别 | 问题 | 修复 commit |
+|------|------|-------------|
+| P1 | **factory dict 路径无护栏**：继承注入把 L0 的 `reasoning_effort` 放进兜底层 dict 后，`AnthropicConfig` 等未声明该形参且无 `**kwargs` 的 provider config 类在 `LlmFactory.create` 时 `TypeError` 直接崩（兜底 anthropic + L0 带 reasoning_effort 的组合）。BaseLlmConfig 转换路径（107-114 行）早有同语义护栏，dict 路径漏了。**测试盲区**：既有单测全 Mock `LlmFactory.create`，绕过真实 config 类构建。 | `e34874a` |
+
+修复要点：`factory.create` dict 分支按 `inspect.signature(config_class)` 过滤——未声明且无 `**kwargs` 的键剥掉（有 `**kwargs` 的如 AWSBedrockConfig 照常全收）；与既存 BaseLlmConfig 转换路径同语义。回归用例：dict 路径 anthropic 剥掉 / openai 保留 + `_build_llm` 真 config 类用例（只桩 load_class，跑真实 config 构建）。
+
+## 第二轮、第三轮 — 复验（连续两轮零 P0-P2，停止线达成）
+
+换角度清单覆盖：
+- LlmConfig.config 类型（pydantic Optional[dict]，BaseLlmConfig 实例不可能流入 → `dict()` 安全）✓
+- `inherit_primary_config` 纯函数无副作用、None/空 dict 防御 ✓
+- 全仓 `FallbackLLM(` 构造点仅有 memory/main.py 与 graphs/falkordb/graph_memory.py 两处，均已接入继承 ✓
+- `update_config` 全量持久化 `_current_config`（含 layer_timeout）→ dashboard 保存不回退 120 ✓（_merge_config dict 深合并，list 整体替换由运行时继承兜底）
+- 各 provider config 签名实证：BaseLlmConfig 系全部声明 reasoning_effort；仅 AnthropicConfig 缺（已护栏）、AWSBedrockConfig 靠 `**kwargs`（放行）✓
+- 生产 sync：4 个改动文件 prod == repo HEAD；uvicorn StatReload 日志确认 factory.py 热生效 ✓
+- FallbackLLM 层内超时注入（layer_timeout=180）与 openai client timeout（MEM0_LLM_TIMEOUT=180）一致 ✓
+
+## P3 残留（待发哥判断是否修复）
+
+1. `inherit_primary_config` 无直接单测（仅经 `_build_llm` 间接覆盖 5 处；加一个 3-断言直测 <10 行）。
+2. `server/README.md` 第 12 节（推理模型 results=0 排查）未提及「fallback 层自动继承 L0 reasoning_effort」——文档补注。
+3. factory dict 过滤使「config 键名拼写错误」从 TypeError 变静默忽略——有意宽容，但配置错误不再报错（可考虑 warn 日志）。
+4. layer1 `9router` 配置残留：key 401 失效 + 服务端 500（换 key 或移除，此前已列待办）。
+5. `MEM0_LLM_MAX_RETRIES=2` 实际无效（FallbackLLM 强制 client.max_retries=0），.env 易误导——建议注释或移除。
+6. config.json fallback 条目无显式 `reasoning_effort`——现由运行时继承兜底；若日后有人移除主层该键，fallback2 将回退思考模式（可考虑 config.json 双保险显式写，属冗余配置）。
+
+## 验证证据（2026-08-31）
+
+- `pytest tests/memory tests/graphs tests/utils` → **593 passed / 21 skipped**（新增 3 项回归）
+- 生产容器 `_build_llm` 实测：L0/L1/L2 全 `reasoning_effort=none`、`max_tokens=8192`、`layer_timeout=180.0`
+- 生产配置核验：MAX_TOKENS=8192、FALLBACK_TIMEOUT=180、config.json layer_timeout=180.0、备份 `*.bak-20260831`
+- 提交链（逐件可回滚）：`c2e413a`（B 修复）→ `e34874a`（P1 修复）；均未推送。
