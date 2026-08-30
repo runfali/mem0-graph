@@ -305,6 +305,19 @@ def test_build_llm_fallbacks_inherit_sampling_params(monkeypatch):
     assert captured[2]["reasoning_effort"] == "none"  # L2 同样跟随 L0
 
 
+def test_inherit_primary_config_direct():
+    """helper 直测：显式优先、缺省继承、主层无则剥掉、None/空输入防御。"""
+    from mem0.llms.fallback import inherit_primary_config
+
+    primary = {"temperature": 0.1, "max_tokens": 8192, "reasoning_effort": "none"}
+    assert inherit_primary_config(primary, {}) == primary  # 缺省全继承
+    assert inherit_primary_config(primary, {"max_tokens": 1024})["max_tokens"] == 1024  # 显式优先
+    assert inherit_primary_config(primary, {"max_tokens": 1024})["reasoning_effort"] == "none"  # 缺的键仍继承
+    assert "reasoning_effort" not in inherit_primary_config({"model": "m"}, {"reasoning_effort": None})
+    assert inherit_primary_config(None, None) == {}  # None 防御
+    assert inherit_primary_config(primary, None) == primary  # fb 缺省
+
+
 def test_build_llm_real_config_anthropic_fallback_with_reasoning_inherit(monkeypatch):
     """回归 P1（2026-08-30 审计）：真实 config 类下兜底 anthropic + L0 继承
     reasoning_effort 不得 TypeError——factory dict 路径对未声明形参的护栏。

@@ -662,6 +662,8 @@ curl -s http://<llm-host>/v1/chat/completions \
 1. `config.json` 的 `llm.config` 追加 `"reasoning_effort": "none"`，让模型跳过思考通道直接输出 `content`；
 2. `mem0/llms/base.py` 的 `_get_common_params()` 支持任意模型透传 `reasoning_effort` 参数（不限于推理模型白名单）。
 
+**兜底层跟随主层**（2026-08-31 补充）：`_build_llm` 构建 fallback 层（L1/L2）时会自动继承主层 L0 的 `temperature` / `max_tokens` / `reasoning_effort`（`mem0/llms/fallback.py` 的 `FALLBACK_INHERIT_KEYS` + `inherit_primary_config`）——主层配了 `reasoning_effort=none`，切层后兜底模型同样生效，无需逐层重复配置。若某 provider 的 config 类未声明该形参（如 `AnthropicConfig` 无 `reasoning_effort`），`LlmFactory.create` 会在构建时剥掉该键并打 WARNING（`dropped unsupported key(s)`），不会崩溃。
+
 > ⚠️ 此项仅推理模型需要，普通模型（OpenAI/GPT、Claude、DeepSeek 非 R1 版等）**无需配置**。取消方法：删除 `config.json` 中 `"reasoning_effort"` 字段即可恢复默认（代码改动无副作用）；如需还原代码，删除 `_get_common_params()` 中「Add reasoning_effort if configured」注释段。
 
 ---

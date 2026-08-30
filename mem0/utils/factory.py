@@ -1,5 +1,6 @@
 import importlib
 import inspect
+import logging
 from typing import Dict, Optional, Union
 
 from mem0.configs.rerankers.siliconflow import SiliconFlowRerankerConfig
@@ -23,6 +24,9 @@ from mem0.configs.rerankers.llm import LLMRerankerConfig
 from mem0.configs.rerankers.sentence_transformer import SentenceTransformerRerankerConfig
 from mem0.configs.rerankers.zero_entropy import ZeroEntropyRerankerConfig
 from mem0.embeddings.mock import MockEmbeddings
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_class(class_type):
@@ -94,7 +98,17 @@ class LlmFactory:
             params = inspect.signature(config_class).parameters
             accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
             if not accepts_kwargs:
-                config = {k: v for k, v in config.items() if k in params}
+                accepted = set(params) - {"self"}
+                dropped = sorted(set(config) - accepted)
+                if dropped:
+                    # 剥掉的键通常是「继承注入但 provider 不支持」（如 anthropic +
+                    # reasoning_effort）；也可能是用户配置拼写错误——warn 保持可见性
+                    logger.warning(
+                        "LlmFactory: %s config dropped unsupported key(s) %s "
+                        "(%s 未声明该形参)",
+                        provider_name, dropped, config_class.__name__,
+                    )
+                config = {k: v for k, v in config.items() if k in accepted}
             config = config_class(**config)
         elif isinstance(config, BaseLlmConfig):
             # Convert base config to provider-specific config if needed

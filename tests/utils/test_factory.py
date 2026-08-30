@@ -64,6 +64,16 @@ def test_dict_config_to_provider_without_reasoning_param_still_builds():
     assert built.reasoning_effort is None
 
 
+def test_dict_config_dropped_keys_logs_warning(caplog):
+    # 剥掉未声明键必须留 warn 日志（配置拼写错误不可静默丢失）
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="mem0.utils.factory"):
+        _capture_config("anthropic", {"model": "claude-3-5", "api_key": "x", "reasoning_effort": "none"})
+
+    assert any("dropped unsupported key" in r.getMessage() for r in caplog.records)
+
+
 def test_dict_config_reasoning_effort_preserved_when_declared():
     # 声明过 reasoning_effort 的 provider（openai/azure 等）必须原样保留
     built = _capture_config("openai", {"model": "gpt-4o", "api_key": "x", "reasoning_effort": "none"})
