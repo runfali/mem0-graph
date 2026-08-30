@@ -51,3 +51,22 @@ def test_base_to_provider_without_reasoning_fields_still_builds():
 
     assert isinstance(built, AnthropicConfig)
     assert built.model == "claude-3-5-sonnet-20240620"
+
+
+def test_dict_config_to_provider_without_reasoning_param_still_builds():
+    # dict 路径同护栏：兜底层继承注入的 reasoning_effort 不得打崩
+    # 未声明该形参且无 **kwargs 的 provider（2026-08-30 审计 P1：anthropic 兜底 + L0 开启继承即 TypeError）
+    built = _capture_config("anthropic", {"model": "claude-3-5", "api_key": "x", "reasoning_effort": "none"})
+
+    assert isinstance(built, AnthropicConfig)
+    assert built.model == "claude-3-5"
+    # 未声明形参 → 键被剥掉，实例仅剩 BaseLlmConfig 默认 None（未被 L0 值污染）
+    assert built.reasoning_effort is None
+
+
+def test_dict_config_reasoning_effort_preserved_when_declared():
+    # 声明过 reasoning_effort 的 provider（openai/azure 等）必须原样保留
+    built = _capture_config("openai", {"model": "gpt-4o", "api_key": "x", "reasoning_effort": "none"})
+
+    assert isinstance(built, OpenAIConfig)
+    assert built.reasoning_effort == "none"

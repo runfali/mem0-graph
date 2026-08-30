@@ -305,6 +305,32 @@ def test_build_llm_fallbacks_inherit_sampling_params(monkeypatch):
     assert captured[2]["reasoning_effort"] == "none"  # L2 同样跟随 L0
 
 
+def test_build_llm_real_config_anthropic_fallback_with_reasoning_inherit(monkeypatch):
+    """回归 P1（2026-08-30 审计）：真实 config 类下兜底 anthropic + L0 继承
+    reasoning_effort 不得 TypeError——factory dict 路径对未声明形参的护栏。
+    全 Mock LlmFactory.create 会绕过 config 类构建（测试盲区），这里只桩 load_class。"""
+    captured = []
+
+    def fake_llm_class(built_config):
+        captured.append(dict(getattr(built_config, "__dict__", {}) or {}))
+        return MockLLM(result="ok")
+
+    monkeypatch.setattr("mem0.utils.factory.load_class", lambda cls: fake_llm_class)
+    cfg = LlmConfig(
+        provider="openai",
+        config={"model": "main", "temperature": 0.1, "reasoning_effort": "none"},
+        fallbacks=[LlmConfig(provider="anthropic", config={"model": "claude-3-5"})],
+    )
+
+    llm = memory_main._build_llm(cfg)
+
+    assert isinstance(llm, FallbackLLM)
+    assert len(llm._llms) == 2
+    assert captured[1]["model"] == "claude-3-5"
+    # AnthropicConfig 未声明形参 → 键被剥掉，仅剩默认 None（未继承 L0 的 "none"）
+    assert captured[1]["reasoning_effort"] is None
+
+
 def test_build_llm_skips_inheritance_when_primary_lacks_keys(monkeypatch):
     """主层自身缺 temperature/max_tokens（或值为 None）→ 兜底层不注入、不炸。"""
     captured = []

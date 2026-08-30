@@ -88,6 +88,13 @@ class LlmFactory:
         elif isinstance(config, dict):
             # Merge dict config with kwargs
             config.update(kwargs)
+            # 同下方 BaseLlmConfig 转换路径的护栏：未声明且无 **kwargs 的键剥掉
+            # （如 AnthropicConfig 无 reasoning_effort 形参），否则继承注入的 L0
+            # 采样参数（reasoning_effort 等）会把 provider 构建直接打崩
+            params = inspect.signature(config_class).parameters
+            accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in params.values())
+            if not accepts_kwargs:
+                config = {k: v for k, v in config.items() if k in params}
             config = config_class(**config)
         elif isinstance(config, BaseLlmConfig):
             # Convert base config to provider-specific config if needed
