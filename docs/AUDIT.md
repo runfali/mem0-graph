@@ -83,3 +83,16 @@
 - 生产容器 `_build_llm` 实测：L0/L1/L2 全 `reasoning_effort=none`、`max_tokens=8192`、`layer_timeout=180.0`
 - 生产配置核验：MAX_TOKENS=8192、FALLBACK_TIMEOUT=180、config.json layer_timeout=180.0、备份 `*.bak-20260831`
 - 提交链（逐件可回滚）：`c2e413a`（B 修复）→ `e34874a`（P1 修复）；均未推送。
+
+## P3 残留清偿（2026-08-31 发哥拍板：1/2/3/5/6 修，4 不动）
+
+| 编号 | 处置 | commit |
+|------|------|-------------|
+| P3-1 | `inherit_primary_config` 直测（显式优先/缺省继承/主层无则剥/None 防御，6 断言） | `31b8915` |
+| P3-2 | `server/README.md` §12 补注兜底层自动继承 L0 采样参数机制 | `31b8915` |
+| P3-3 | factory dict 过滤剥键打 WARNING（dropped unsupported key(s)），拼写错误不再静默 | `31b8915` |
+| P3-4 | 不修（9router key 401 + 500，待发哥换 key/移除） | — |
+| P3-5 | 生产 .env 注释 `MEM0_LLM_MAX_RETRIES=2`（FallbackLLM 强制 client.max_retries=0，误导性死配置） | 生产 only |
+| P3-6 | 生产 config.json fallback2 显式 `reasoning_effort=none` 双保险（冗余但防主层键被移除时回退思考模式） | 生产 only |
+
+验证（2026-08-31 二次）：`pytest tests/memory tests/graphs tests/utils` → **595 passed / 21 skipped**；生产容器重启后 L0/L1/L2 全 `re=none/mt=8192`、`layer_timeout=180.0`、healthy；备份 `config.json.bak-20260831-p3`。
