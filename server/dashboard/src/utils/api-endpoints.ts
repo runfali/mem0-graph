@@ -46,6 +46,7 @@ export const REFINE_ENDPOINTS = {
   CANDIDATES: "/memory/refine/candidates",
   APPLY: "/memory/refine/apply",
   ROLLBACK: "/memory/refine/rollback",
+  DELETE: "/memory/refine/delete",
   HISTORY: "/memory/refine/history",
 } as const;
 

@@ -29,7 +29,11 @@ import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { getErrorMessage } from "@/lib/error-message";
 import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/utils/api";
-import { EVOLVE_ENDPOINTS, MEMORY_ENDPOINTS, REFINE_ENDPOINTS } from "@/utils/api-endpoints";
+import {
+  EVOLVE_ENDPOINTS,
+  MEMORY_ENDPOINTS,
+  REFINE_ENDPOINTS,
+} from "@/utils/api-endpoints";
 import { useApiQuery } from "@/hooks/use-api-query";
 import { toast } from "@/components/ui/use-toast";
 import type {
@@ -183,6 +187,171 @@ const memoryIdCell = (value: string) => (
     <MemoryViewer memoryId={value} />
   </span>
 );
+
+function RefineCandidateDetail({
+  candidate,
+  onClose,
+  onApply,
+  onRollback,
+  onDelete,
+}: {
+  candidate: RefineCandidate;
+  onClose: () => void;
+  onApply: (c: RefineCandidate) => void;
+  onRollback: (c: RefineCandidate) => void;
+  onDelete: (c: RefineCandidate) => void;
+}) {
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[min(36rem,92vw)] max-h-[min(70vh,40rem)] flex flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>
+            {candidate.topic || `候选 #${candidate.id}`}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 min-h-0 space-y-3 overflow-y-auto pr-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-onSurface-default-tertiary">
+            <Badge
+              variant={REFINE_STATUS_VARIANTS[candidate.status] ?? "violet"}
+            >
+              {REFINE_STATUS_LABELS[candidate.status] ?? candidate.status}
+            </Badge>
+            <span>候选 #{candidate.id}</span>
+            <span>组内 {candidate.memory_ids.length} 条原记忆</span>
+            {candidate.user_id && <span>user: {candidate.user_id}</span>}
+            {candidate.created_at && (
+              <span>生成 {fmtDateTime(candidate.created_at)}</span>
+            )}
+          </div>
+          <div>
+            <h5 className="mb-1 text-xs font-semibold text-onSurface-default-secondary">
+              建议稿
+            </h5>
+            {candidate.suggested_text.length > 0 ? (
+              <ul className="space-y-1">
+                {candidate.suggested_text.map((s, i) => (
+                  <li
+                    key={i}
+                    className="text-sm text-onSurface-default-primary"
+                  >
+                    · {s}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-onSurface-default-tertiary">
+                （无建议稿，LLM 生成失败，可删除后重试）
+              </p>
+            )}
+          </div>
+          <div>
+            <h5 className="mb-1 text-xs font-semibold text-onSurface-default-secondary">
+              组内原记忆
+            </h5>
+            <ul className="space-y-0.5 break-all font-mono text-xs text-onSurface-default-tertiary">
+              {candidate.memory_ids.map((mid) => (
+                <li key={mid}>{mid}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap justify-end gap-2 border-t border-memBorder-primary pt-3">
+          {candidate.status === "proposed" && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                onApply(candidate);
+                onClose();
+              }}
+            >
+              确认应用
+            </Button>
+          )}
+          {candidate.status === "applied" && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                onRollback(candidate);
+                onClose();
+              }}
+            >
+              回滚
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            className="text-onSurface-danger-primary"
+            onClick={() => {
+              onDelete(candidate);
+              onClose();
+            }}
+          >
+            删除
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RefineDeleteDialog({
+  candidate,
+  onClose,
+  onConfirm,
+}: {
+  candidate: RefineCandidate | null;
+  onClose: () => void;
+  onConfirm: (c: RefineCandidate, withMemories: boolean) => void;
+}) {
+  if (!candidate) return null;
+  const applied = candidate.status === "applied";
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>删除候选 #{candidate.id}</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-onSurface-default-secondary">
+          删除「{candidate.topic || `候选 #${candidate.id}`}」候选记录
+          {applied ? "，请选择精炼产物处理方式：" : "（不影响记忆本身）。"}
+        </p>
+        {applied ? (
+          <div className="space-y-2">
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={() => onConfirm(candidate, false)}
+            >
+              仅删除候选记录 —— 保留精炼产物，原记忆保持已精炼标记
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-start text-onSurface-danger-primary"
+              onClick={() => onConfirm(candidate, true)}
+            >
+              删除候选记录和精炼产物 —— 原记忆还原为普通记忆
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => onConfirm(candidate, false)}
+            >
+              确认删除
+            </Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function StaleActions({
   memoryId,
@@ -449,15 +618,27 @@ function RecallFunnel({ stages }: { stages: RecallStageStat[] }) {
   );
 }
 
-function TrendTooltip({ active, payload, label }: TooltipProps<number, string>) {
+function TrendTooltip({
+  active,
+  payload,
+  label,
+}: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-lg border border-[var(--sentry-hairline)] bg-[var(--sentry-night)]/95 px-3 py-2 shadow-lg">
-      <div className="mb-1.5 text-xs text-[var(--sentry-ink-muted)]">{fmtDay(String(label))}</div>
+      <div className="mb-1.5 text-xs text-[var(--sentry-ink-muted)]">
+        {fmtDay(String(label))}
+      </div>
       <div className="space-y-1">
         {payload.map((entry) => (
-          <div key={entry.dataKey as string} className="flex items-center gap-2 text-[13px]">
-            <span className="h-2.5 w-2.5 rounded-[2px]" style={{ background: entry.color }} />
+          <div
+            key={entry.dataKey as string}
+            className="flex items-center gap-2 text-[13px]"
+          >
+            <span
+              className="h-2.5 w-2.5 rounded-[2px]"
+              style={{ background: entry.color }}
+            />
             <span className="text-[var(--sentry-ink-muted)]">{entry.name}</span>
             <span className="ml-auto font-medium text-[var(--sentry-ink)]">
               {fmtCount(Number(entry.value))}
@@ -490,13 +671,16 @@ export default function AnalyticsPage() {
     { errorToast: "加载分析数据失败", initialData: EMPTY_REPORT },
   );
 
-  const { data: typeDist = { distribution: [] } } = useApiQuery<MemoryTypeDistribution>(
-    async () => {
-      const res = await api.get<MemoryTypeDistribution>(MEMORY_ENDPOINTS.TYPES_DISTRIBUTION);
-      return res.data;
-    },
-    { errorToast: "加载记忆构成失败", initialData: { distribution: [] } },
-  );
+  const { data: typeDist = { distribution: [] } } =
+    useApiQuery<MemoryTypeDistribution>(
+      async () => {
+        const res = await api.get<MemoryTypeDistribution>(
+          MEMORY_ENDPOINTS.TYPES_DISTRIBUTION,
+        );
+        return res.data;
+      },
+      { errorToast: "加载记忆构成失败", initialData: { distribution: [] } },
+    );
 
   // Admin sees all users' candidates/history (backend returns full scope when
   // user_id is omitted); non-admin is scoped to their own id.
@@ -509,12 +693,18 @@ export default function AnalyticsPage() {
   const {
     data: refineData = { candidates: [], history: [] },
     refetch: refetchRefine,
-  } = useApiQuery<{ candidates: RefineCandidate[]; history: RefineCandidate[] }>(
+  } = useApiQuery<{
+    candidates: RefineCandidate[];
+    history: RefineCandidate[];
+  }>(
     async () => {
       const [c, h] = await Promise.all([
-        api.get<{ candidates: RefineCandidate[] }>(REFINE_ENDPOINTS.CANDIDATES, {
-          params: refineUserId,
-        }),
+        api.get<{ candidates: RefineCandidate[] }>(
+          REFINE_ENDPOINTS.CANDIDATES,
+          {
+            params: refineUserId,
+          },
+        ),
         api.get<{ history: RefineCandidate[] }>(REFINE_ENDPOINTS.HISTORY, {
           params: refineUserId,
         }),
@@ -524,19 +714,37 @@ export default function AnalyticsPage() {
         history: h.data?.history ?? [],
       };
     },
-    { errorToast: "加载精炼数据失败", initialData: { candidates: [], history: [] } },
+    {
+      errorToast: "加载精炼数据失败",
+      initialData: { candidates: [], history: [] },
+    },
   );
+
+  const [detailCand, setDetailCand] = useState<RefineCandidate | null>(null);
+  const [deleteCand, setDeleteCand] = useState<RefineCandidate | null>(null);
 
   const handleGenerateCandidates = async () => {
     setGenerating(true);
     try {
-      const res = await api.post<{ candidates: RefineCandidate[] }>(
-        REFINE_ENDPOINTS.CANDIDATES,
-        undefined,
-        { params: refineUserId },
-      );
-      const count = res.data?.candidates?.length ?? 0;
-      toast({ title: `已生成 ${count} 个候选`, variant: "success" });
+      const res = await api.post<{
+        candidates: RefineCandidate[];
+        stats?: {
+          scanned: number;
+          groups: number;
+          membered: number;
+          not_clustered: number;
+        };
+      }>(REFINE_ENDPOINTS.CANDIDATES, undefined, { params: refineUserId });
+      const cands = res.data?.candidates ?? [];
+      const stats = res.data?.stats;
+      const count = cands.length;
+      toast({
+        title:
+          count > 0
+            ? `已生成 ${count} 组候选（扫描 ${stats?.scanned ?? 0} 条 → 涉及 ${stats?.membered ?? 0} 条，未成组 ${stats?.not_clustered ?? 0} 条）`
+            : `未生成新候选（扫描 ${stats?.scanned ?? 0} 条；已有候选或未满足成组条件）`,
+        variant: count > 0 ? "success" : "default",
+      });
       void refetchRefine();
     } catch (err) {
       toast({
@@ -577,9 +785,36 @@ export default function AnalyticsPage() {
     }
   };
 
-  const totalMemories = typeDist.distribution.reduce((s, d) => s + (d.count ?? 0), 0);
+  const handleDeleteCandidate = async (
+    candidate: RefineCandidate,
+    withMemories: boolean,
+  ) => {
+    try {
+      await api.post(REFINE_ENDPOINTS.DELETE, {
+        candidate_id: candidate.id,
+        with_memories: withMemories,
+      });
+      toast({
+        title: withMemories ? "候选与精炼产物已删除" : "候选记录已删除",
+        variant: "success",
+      });
+      void refetchRefine();
+    } catch (err) {
+      toast({
+        title: "删除失败",
+        description: getErrorMessage(err),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const totalMemories = typeDist.distribution.reduce(
+    (s, d) => s + (d.count ?? 0),
+    0,
+  );
   const typeItems = typeDist.distribution.map((d) => {
-    const pct = totalMemories > 0 ? ((d.count / totalMemories) * 100).toFixed(1) : "0.0";
+    const pct =
+      totalMemories > 0 ? ((d.count / totalMemories) * 100).toFixed(1) : "0.0";
     return {
       label: `${MEMORY_TYPE_LABELS[d.type] ?? d.type} · ${pct}%`,
       value: d.count,
@@ -771,6 +1006,130 @@ export default function AnalyticsPage() {
       label: "时间",
       width: 140,
       render: (v: string | null) => fmtDateTime(v),
+    },
+  ];
+
+  const candidateRows = refineData.candidates.filter(
+    (c) => c.status === "proposed" || c.status === "failed",
+  );
+
+  const refineTitleCell = (row: RefineCandidate) => (
+    <button
+      type="button"
+      className="max-w-full truncate text-left text-sm text-onSurface-default-primary hover:underline"
+      onClick={() => setDetailCand(row)}
+    >
+      {row.topic || `候选 #${row.id}`}
+    </button>
+  );
+
+  const refineStatusCell = (row: RefineCandidate) => (
+    <Badge variant={REFINE_STATUS_VARIANTS[row.status] ?? "violet"}>
+      {REFINE_STATUS_LABELS[row.status] ?? row.status}
+    </Badge>
+  );
+
+  const refineCandidateColumns = [
+    {
+      key: "topic" as const,
+      label: "候选",
+      render: (_: string | null, row: RefineCandidate) => refineTitleCell(row),
+    },
+    {
+      key: "status" as const,
+      label: "状态",
+      width: 90,
+      render: (_: string, row: RefineCandidate) => refineStatusCell(row),
+    },
+    {
+      key: "memory_ids" as const,
+      label: "组内",
+      width: 70,
+      render: (v: string[]) => `${(v ?? []).length} 条`,
+    },
+    {
+      key: "created_at" as const,
+      label: "生成时间",
+      width: 130,
+      render: (v: string | null) => fmtDateTime(v),
+    },
+    {
+      key: "id" as const,
+      label: "操作",
+      width: 220,
+      render: (_: number, row: RefineCandidate) => (
+        <div className="flex items-center gap-1">
+          {row.status === "proposed" && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => void handleApplyCandidate(row)}
+            >
+              确认应用
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            className="text-onSurface-danger-primary"
+            onClick={() => setDeleteCand(row)}
+          >
+            删除
+          </Button>
+        </div>
+      ),
+    },
+  ];
+
+  const refineHistoryColumns = [
+    {
+      key: "topic" as const,
+      label: "候选",
+      render: (_: string | null, row: RefineCandidate) => refineTitleCell(row),
+    },
+    {
+      key: "status" as const,
+      label: "状态",
+      width: 90,
+      render: (_: string, row: RefineCandidate) => refineStatusCell(row),
+    },
+    {
+      key: "memory_ids" as const,
+      label: "组内",
+      width: 70,
+      render: (v: string[]) => `${(v ?? []).length} 条`,
+    },
+    {
+      key: "updated_at" as const,
+      label: "时间",
+      width: 130,
+      render: (v: string | null) => fmtDateTime(v),
+    },
+    {
+      key: "id" as const,
+      label: "操作",
+      width: 220,
+      render: (_: number, row: RefineCandidate) => (
+        <div className="flex items-center gap-1">
+          {row.status === "applied" && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => void handleRollbackCandidate(row)}
+            >
+              回滚
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="xs"
+            className="text-onSurface-danger-primary"
+            onClick={() => setDeleteCand(row)}
+          >
+            删除
+          </Button>
+        </div>
+      ),
     },
   ];
 
@@ -1021,51 +1380,13 @@ export default function AnalyticsPage() {
             description="碎片化记忆经 LLM 压缩为高层抽象建议稿；确认应用后写入记忆库并软标记原记忆，可回滚。"
           >
             <Section title="候选（建议稿）">
-              {refineData.candidates.length > 0 ? (
-                <div className="space-y-3">
-                  {refineData.candidates.map((c) => (
-                    <div
-                      key={c.id}
-                      className="space-y-2 rounded-md border border-memBorder-primary bg-surface-default-primary p-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-onSurface-default-primary">
-                          {c.topic || `候选 #${c.id}`}
-                        </span>
-                        <Badge variant={REFINE_STATUS_VARIANTS[c.status] ?? "violet"}>
-                          {REFINE_STATUS_LABELS[c.status] ?? c.status}
-                        </Badge>
-                      </div>
-                      <p className="text-xs text-onSurface-default-tertiary">
-                        组内 {c.memory_ids.length} 条原记忆
-                        {c.user_id && c.user_id !== user?.id
-                          ? ` · user: ${c.user_id}`
-                          : ""}
-                      </p>
-                      <ul className="space-y-1">
-                        {c.suggested_text.map((s, i) => (
-                          <li
-                            key={i}
-                            className="text-sm text-onSurface-default-primary"
-                          >
-                            · {s}
-                          </li>
-                        ))}
-                      </ul>
-                      {c.status === "proposed" && (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => void handleApplyCandidate(c)}
-                          >
-                            确认应用
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+              {candidateRows.length > 0 ? (
+                <DataTable
+                  data={candidateRows}
+                  columns={refineCandidateColumns}
+                  getRowKey={(row) => row.id}
+                  pagination={{ pageSize: 10 }}
+                />
               ) : (
                 <NoData text="暂无精炼候选。可在上方未召回清单点击「生成精炼候选」" />
               )}
@@ -1073,56 +1394,12 @@ export default function AnalyticsPage() {
 
             <Section title="历史">
               {refineData.history.length > 0 ? (
-                <div className="space-y-3">
-                  {refineData.history.map((c) => (
-                    <div
-                      key={c.id}
-                      className="space-y-2 rounded-md border border-memBorder-primary bg-surface-default-primary p-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-onSurface-default-primary">
-                          {c.topic || `候选 #${c.id}`}
-                        </span>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <Badge variant={REFINE_STATUS_VARIANTS[c.status] ?? "violet"}>
-                            {REFINE_STATUS_LABELS[c.status] ?? c.status}
-                          </Badge>
-                          {c.status === "applied" && (
-                            <Button
-                              variant="outline"
-                              size="xs"
-                              className="text-onSurface-danger-primary"
-                              onClick={() => void handleRollbackCandidate(c)}
-                            >
-                              回滚
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      <p className="text-xs text-onSurface-default-tertiary">
-                        组内 {c.memory_ids.length} 条原记忆
-                        {c.user_id && c.user_id !== user?.id
-                          ? ` · user: ${c.user_id}`
-                          : ""}
-                        {c.updated_at
-                          ? ` · ${fmtDateTime(c.updated_at)}`
-                          : ""}
-                      </p>
-                      {c.suggested_text.length > 0 && (
-                        <ul className="space-y-1">
-                          {c.suggested_text.map((s, i) => (
-                            <li
-                              key={i}
-                              className="text-sm text-onSurface-default-primary"
-                            >
-                              · {s}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <DataTable
+                  data={refineData.history}
+                  columns={refineHistoryColumns}
+                  getRowKey={(row) => row.id}
+                  pagination={{ pageSize: 10 }}
+                />
               ) : (
                 <NoData text="暂无已应用或已回滚的记录" />
               )}
@@ -1158,6 +1435,24 @@ export default function AnalyticsPage() {
           </Panel>
         </>
       )}
+
+      {detailCand && (
+        <RefineCandidateDetail
+          candidate={detailCand}
+          onClose={() => setDetailCand(null)}
+          onApply={(c) => void handleApplyCandidate(c)}
+          onRollback={(c) => void handleRollbackCandidate(c)}
+          onDelete={(c) => setDeleteCand(c)}
+        />
+      )}
+      <RefineDeleteDialog
+        candidate={deleteCand}
+        onClose={() => setDeleteCand(null)}
+        onConfirm={(c, withMemories) => {
+          setDeleteCand(null);
+          void handleDeleteCandidate(c, withMemories);
+        }}
+      />
     </div>
   );
 }
