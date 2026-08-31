@@ -23,7 +23,7 @@ MAX_SUMMARY_COUNT = 3
 REFINE_SYSTEM_PROMPT = (
     "你是记忆精炼器。把以下 N 条碎记忆合并为 1-3 条高层抽象事实。"
     "要求：保留关键主体、时间、数字、关系；去掉过程细节与重复；每条自包含；"
-    '只输出 JSON {"summary": ["..."]}。'
+    '只输出 JSON {"topic": "简短主题，不超过20字", "summary": ["...", "..."]}。'
 )
 
 
@@ -99,8 +99,12 @@ def cluster_candidates(
     return candidates
 
 
-def _parse_summary(response) -> Optional[list[str]]:
-    """Parse the LLM response into a non-empty list of summary strings."""
+def _parse_output(response) -> Optional[tuple[Optional[str], list[str]]]:
+    """Parse the LLM response into (topic, summary list).
+
+    Accepts both the current {"topic", "summary"} shape and the legacy
+    {"summary"} shape (topic then falls back to the first summary line).
+    """
     text = response.strip() if isinstance(response, str) else ""
     if not text:
         return None
@@ -120,7 +124,13 @@ def _parse_summary(response) -> Optional[list[str]]:
     if not isinstance(summary, list):
         return None
     cleaned = [str(s).strip() for s in summary if str(s).strip()]
-    return cleaned[:MAX_SUMMARY_COUNT] or None
+    if not cleaned:
+        return None
+    topic = parsed.get("topic")
+    topic = str(topic).strip() if topic else ""
+    if not topic:
+        topic = cleaned[0][:20]
+    return topic[:20], cleaned[:MAX_SUMMARY_COUNT]
 
 
 def refine_group(memory, candidate: dict[str, Any]) -> dict:
@@ -160,8 +170,9 @@ def refine_group(memory, candidate: dict[str, Any]) -> dict:
         logger.warning("refine LLM failed: %s", e)
         return {"status": "failed", "suggested_text": []}
 
-    summary = _parse_summary(response)
+    summary = _parse_output(response)
     if summary is None:
         logger.warning("refine: unparseable LLM output: %r", response)
-        return {"status": "failed", "suggested_text": []}
-    return {"status": "proposed", "suggested_text": summary}
+        return {"status": "failed", "suggested_text": [], "topic": None}
+    topic, cleaned = summary
+    return {"status": "proposed", "suggested_text": cleaned, "topic": topic}

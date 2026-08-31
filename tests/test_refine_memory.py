@@ -112,7 +112,10 @@ class TestRefineGroup:
     def test_valid_llm_json_saves_proposal_without_writing_vector_store(self):
         memory = _memory_with_embeddings(
             [],
-            llm_return=json.dumps({"summary": ["高层抽象1", "高层抽象2"]}, ensure_ascii=False),
+            llm_return=json.dumps(
+                {"topic": "记忆精炼", "summary": ["高层抽象1", "高层抽象2"]},
+                ensure_ascii=False,
+            ),
         )
         memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
 
@@ -120,8 +123,21 @@ class TestRefineGroup:
 
         assert out["status"] == "proposed"
         assert out["suggested_text"] == ["高层抽象1", "高层抽象2"]
+        assert out["topic"] == "记忆精炼"
         memory.vector_store.insert.assert_not_called()
         memory.vector_store.update.assert_not_called()
+
+    def test_legacy_json_without_topic_falls_back_to_first_summary(self):
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps({"summary": ["高层抽象1", "高层抽象2"]}, ensure_ascii=False),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refine_group(memory, {"memory_ids": ["m1", "m2", "m3"]})
+
+        assert out["status"] == "proposed"
+        assert out["topic"] == "高层抽象1"
 
     def test_invalid_json_fails_gracefully(self):
         memory = _memory_with_embeddings([], llm_return="这不是JSON")

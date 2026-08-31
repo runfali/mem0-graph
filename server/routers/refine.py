@@ -155,7 +155,7 @@ def discover_refine_candidates(
         row = MemoryRefineCandidate(
             user_id=user_id,
             memory_ids=cand["memory_ids"],
-            topic=cand["topic"],
+            topic=None,
             status=STATUS_PROPOSED,
             suggested_text=[],
         )
@@ -164,6 +164,11 @@ def discover_refine_candidates(
         outcome = refine_group(memory, {"memory_ids": cand["memory_ids"]})
         row.status = outcome["status"]
         row.suggested_text = outcome["suggested_text"]
+        # Topic comes from the LLM (a proper short title); failed proposals
+        # keep topic=None so the UI shows "候选 #id" instead of a raw
+        # first-memory truncation.
+        if outcome["status"] == STATUS_PROPOSED:
+            row.topic = outcome.get("topic")
         created.append(_serialize_candidate(row))
     db.commit()
     return created
