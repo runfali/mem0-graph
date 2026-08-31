@@ -479,6 +479,72 @@ class TestRefineAdminScope:
         assert called == ["u1", "u2"]
 
 
+class TestDiscoverIdempotency:
+    """Dedup guards on the shared discovery pipeline (timer + manual POST)."""
+
+    def _memory(self, vectors, payloads=None):
+        memory = MagicMock()
+        memory.embedding_model.embed_batch = MagicMock(return_value=vectors)
+        memory.llm.generate_response = MagicMock(
+            return_value=json.dumps({"summary": ["摘要"]}, ensure_ascii=False)
+        )
+        memory.vector_store.get = MagicMock(
+            side_effect=lambda mid: SimpleNamespace(
+                payload=(payloads or {}).get(mid, {"data": f"碎记忆{mid}", "user_id": "u1"})
+            )
+        )
+        return memory
+
+    def test_stale_skips_superseded_memories(self):
+        memory = self._memory(
+            [[1, 0, 0], [0.9, 0.43589, 0], [0.95, 0.31225, 0]],
+            {
+                "m2": {
+                    "data": "已精炼的原记忆",
+                    "user_id": "u1",
+                    "superseded_by": "n1",
+                }
+            },
+        )
+        db = MagicMock()
+        db.execute.return_value.all.return_value = [("m1",), ("m2",), ("m3",)]
+
+        items = refine_router._collect_stale_items(memory, db, "u1")
+
+        assert [it["id"] for it in items] == ["m1", "m3"]
+
+    def test_discover_skips_group_already_proposed(self):
+        memory = self._memory([[1, 0, 0], [0.9, 0.43589, 0], [0.95, 0.31225, 0]])
+        db = MagicMock()
+        stale_rows = [("m1",), ("m2",), ("m3",)]
+        # first execute (stale query) returns rows; second (existing groups) has the group
+        db.execute.side_effect = [
+            SimpleNamespace(all=lambda: stale_rows),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [["m1", "m2", "m3"]])),
+        ]
+
+        created = refine_router.discover_refine_candidates(memory, db, "u1")
+
+        assert created == []
+        db.add.assert_not_called()
+
+    def test_discover_keeps_groups_not_in_existing_candidates(self):
+        memory = self._memory([[1, 0, 0], [0.9, 0.43589, 0], [0.95, 0.31225, 0]])
+        db = MagicMock()
+        db.execute.side_effect = [
+            SimpleNamespace(all=lambda: [("m1",), ("m2",), ("m3",)]),
+            SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [["m9", "m10", "m11"]])
+            ),
+        ]
+
+        created = refine_router.discover_refine_candidates(memory, db, "u1")
+
+        assert len(created) == 1
+        assert created[0]["memory_ids"] == ["m1", "m2", "m3"]
+        assert db.add.call_count == 1
+
+
 class TestRefineCronScript:
     def test_refine_candidates_script_discover_only(self, mocker, tmp_path, monkeypatch):
         config = {

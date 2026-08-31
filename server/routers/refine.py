@@ -79,6 +79,10 @@ def _collect_stale_items(memory, db: Session, user_id: str) -> list[dict]:
         if result is None:
             continue
         payload = getattr(result, "payload", None) or {}
+        if payload.get("superseded_by"):
+            # Already refined (soft-superseded originals must not re-enter the
+            # stale pool; otherwise every rerun re-clusters the same memories).
+            continue
         if payload.get("user_id") != user_id:
             continue
         data = payload.get("data")
@@ -123,8 +127,23 @@ def discover_refine_candidates(memory, db: Session, user_id: str) -> list[dict]:
     items = _collect_stale_items(memory, db, user_id)
     candidates = cluster_candidates(memory, items)
 
+    # Idempotency guard: the daily timer and manual POST share this pipeline;
+    # without dedup, reruns re-cluster the same memories into identical
+    # candidate rows. Groups already proposed/applied are skipped (failed and
+    # rolled_back stay eligible for retry).
+    used_groups = {
+        frozenset(ids or [])
+        for ids in db.execute(
+            select(MemoryRefineCandidate.memory_ids).where(
+                MemoryRefineCandidate.status.in_((STATUS_PROPOSED, STATUS_APPLIED))
+            )
+        ).scalars().all()
+    }
+
     created = []
     for cand in candidates:
+        if frozenset(cand["memory_ids"]) in used_groups:
+            continue
         row = MemoryRefineCandidate(
             user_id=user_id,
             memory_ids=cand["memory_ids"],
