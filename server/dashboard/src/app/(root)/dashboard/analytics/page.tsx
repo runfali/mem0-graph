@@ -152,14 +152,14 @@ function MemoryViewer({ memoryId }: { memoryId: string }) {
           查看
         </Button>
       </DialogTrigger>
-      <DialogContent className="w-[min(36rem,92vw)] max-h-[min(70vh,40rem)] flex flex-col overflow-hidden">
+      <DialogContent className="w-[min(50rem,95vw)] flex flex-col">
         <DialogHeader>
           <DialogTitle>记忆内容</DialogTitle>
         </DialogHeader>
         <div className="font-mono text-xs break-all text-onSurface-default-tertiary">
           {memoryId}
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+        <div className="pr-1">
           {loading ? (
             <p className="text-sm text-onSurface-default-secondary">
               加载中...
@@ -203,13 +203,13 @@ function RefineCandidateDetail({
 }) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="w-[min(36rem,92vw)] max-h-[min(70vh,40rem)] flex flex-col overflow-hidden">
+      <DialogContent className="w-[min(50rem,95vw)] flex flex-col">
         <DialogHeader>
           <DialogTitle>
             {candidate.topic || `候选 #${candidate.id}`}
           </DialogTitle>
         </DialogHeader>
-        <div className="flex-1 min-h-0 space-y-3 overflow-y-auto pr-1">
+        <div className="space-y-3 pr-1">
           <div className="flex flex-wrap items-center gap-2 text-xs text-onSurface-default-tertiary">
             <Badge
               variant={REFINE_STATUS_VARIANTS[candidate.status] ?? "violet"}
@@ -232,7 +232,7 @@ function RefineCandidateDetail({
                 {candidate.suggested_text.map((s, i) => (
                   <li
                     key={i}
-                    className="text-sm text-onSurface-default-primary"
+                    className="break-words text-sm text-onSurface-default-primary"
                   >
                     · {s}
                   </li>
