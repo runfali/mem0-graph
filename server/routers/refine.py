@@ -39,6 +39,11 @@ class RefineCandidateRequest(BaseModel):
     candidate_id: int
 
 
+class RefineDeleteRequest(BaseModel):
+    candidate_id: int
+    with_memories: bool = False
+
+
 def _serialize_candidate(row: MemoryRefineCandidate) -> dict:
     return {
         "id": row.id,
@@ -118,13 +123,16 @@ def _discover_users(memory) -> list[str]:
     return sorted(user_ids)
 
 
-def discover_refine_candidates(memory, db: Session, user_id: str) -> list[dict]:
+def discover_refine_candidates(
+    memory, db: Session, user_id: str, items: Optional[list[dict]] = None
+) -> list[dict]:
     """Shared core: stale discovery -> clustering -> LLM proposal -> candidate rows.
 
     Candidates are written to the candidate table only — never to the vector
-    store (apply is human-triggered).
+    store (apply is human-triggered). ``items`` may be passed in when the
+    caller already collected stale items (avoids a second vector-store scan).
     """
-    items = _collect_stale_items(memory, db, user_id)
+    items = items if items is not None else _collect_stale_items(memory, db, user_id)
     candidates = cluster_candidates(memory, items)
 
     # Idempotency guard: the daily timer and manual POST share this pipeline;
@@ -173,15 +181,34 @@ def generate_refine_candidates(
     otherwise scoped to the caller (or the requested user).
     """
     memory = get_memory_instance()
+
+    def _run(uid: str) -> tuple[int, list[dict]]:
+        items = _collect_stale_items(memory, db, uid)
+        created = discover_refine_candidates(memory, db, uid, items=items)
+        return len(items), created
+
+    scanned = 0
+    created = []
     if user_id:
-        created = discover_refine_candidates(memory, db, user_id)
+        scanned, created = _run(user_id)
     elif getattr(_auth, "role", None) == "admin":
-        created = []
         for uid in _discover_users(memory):
-            created.extend(discover_refine_candidates(memory, db, uid))
+            n, rows = _run(uid)
+            scanned += n
+            created.extend(rows)
     else:
-        created = discover_refine_candidates(memory, db, str(_auth.id))
-    return {"candidates": created}
+        scanned, created = _run(str(_auth.id))
+
+    membered = sum(len(c["memory_ids"]) for c in created)
+    return {
+        "candidates": created,
+        "stats": {
+            "scanned": scanned,
+            "groups": len(created),
+            "membered": membered,
+            "not_clustered": max(scanned - membered, 0),
+        },
+    }
 
 
 def _soft_supersede(memory, memory_ids: list[str], superseded_by: str) -> None:
@@ -276,7 +303,16 @@ def rollback_refine_candidate(
         except Exception as e:  # noqa: BLE001
             logger.warning("refine rollback delete %s failed: %s", mid, e)
 
-    for mid in row.memory_ids or []:
+    _restore_originals(memory, row.memory_ids or [])
+
+    row.status = STATUS_ROLLED_BACK
+    db.commit()
+    return {"candidate_id": req.candidate_id, "status": row.status}
+
+
+def _restore_originals(memory, memory_ids: list[str]) -> None:
+    """Clear superseded marks on original memories (rollback / delete-with-memories)."""
+    for mid in memory_ids:
         try:
             result = memory.vector_store.get(mid)
         except Exception:  # noqa: BLE001
@@ -289,11 +325,43 @@ def rollback_refine_candidate(
         try:
             memory.vector_store.update(mid, payload=payload)
         except Exception as e:  # noqa: BLE001
-            logger.warning("refine rollback restore %s failed: %s", mid, e)
+            logger.warning("refine restore %s failed: %s", mid, e)
 
-    row.status = STATUS_ROLLED_BACK
+
+@router.post("/delete")
+def delete_refine_candidate(
+    req: RefineDeleteRequest,
+    _auth=Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Delete a candidate record, optionally removing its refined memories.
+
+    with_memories=false (any status): drop only the record. For applied rows the
+    refined memories stay and originals keep their superseded mark.
+
+    with_memories=true (applied only): also delete the refined memories and
+    restore the originals' superseded marks (i.e. rollback + remove record).
+    """
+    row = db.get(MemoryRefineCandidate, req.candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="候选不存在")
+
+    if req.with_memories and row.status == STATUS_APPLIED:
+        memory = get_memory_instance()
+        for mid in row.refined_memory_ids or []:
+            try:
+                memory.delete(mid)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("refine delete %s failed: %s", mid, e)
+        _restore_originals(memory, row.memory_ids or [])
+
+    db.delete(row)
     db.commit()
-    return {"candidate_id": req.candidate_id, "status": row.status}
+    return {
+        "candidate_id": req.candidate_id,
+        "deleted": True,
+        "with_memories": req.with_memories,
+    }
 
 
 @router.get("/history")

@@ -336,6 +336,76 @@ class TestRefineRollback:
         memory.delete.assert_not_called()
 
 
+class TestRefineDelete:
+    def _delete_client(self, mocker, db, row, memory):
+        db.get.return_value = row
+        mocker.patch.object(refine_router, "get_memory_instance", return_value=memory)
+        return _make_app(db)
+
+    def test_delete_proposed_drops_record_only(self, mocker):
+        db = MagicMock()
+        row = _candidate_row(status="proposed", memory_ids=["m1", "m2"])
+        memory = MagicMock()
+        client = self._delete_client(mocker, db, row, memory)
+
+        resp = client.post("/memory/refine/delete", json={"candidate_id": 1})
+
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+        db.delete.assert_called_once_with(row)
+        memory.delete.assert_not_called()
+        memory.vector_store.update.assert_not_called()
+
+    def test_delete_applied_without_memories_keeps_refined_and_superseded(self, mocker):
+        db = MagicMock()
+        row = _candidate_row(status="applied", memory_ids=["m1"], refined_memory_ids=["n1"])
+        memory = MagicMock()
+        client = self._delete_client(mocker, db, row, memory)
+
+        resp = client.post(
+            "/memory/refine/delete",
+            json={"candidate_id": 1, "with_memories": False},
+        )
+
+        assert resp.status_code == 200
+        db.delete.assert_called_once_with(row)
+        memory.delete.assert_not_called()
+        memory.vector_store.update.assert_not_called()  # superseded marks kept
+
+    def test_delete_applied_with_memories_removes_refined_and_restores_originals(
+        self, mocker
+    ):
+        db = MagicMock()
+        row = _candidate_row(status="applied", memory_ids=["m1"], refined_memory_ids=["n1"])
+        memory = MagicMock()
+        memory.vector_store.get.return_value = SimpleNamespace(
+            payload={"data": "碎记忆", "user_id": "u1", "superseded_by": "n1", "superseded_at": "2026-01-01"}
+        )
+        client = self._delete_client(mocker, db, row, memory)
+
+        resp = client.post(
+            "/memory/refine/delete",
+            json={"candidate_id": 1, "with_memories": True},
+        )
+
+        assert resp.status_code == 200
+        memory.delete.assert_called_once_with("n1")
+        upd = memory.vector_store.update.call_args.kwargs
+        assert "superseded_by" not in upd["payload"]
+        db.delete.assert_called_once_with(row)
+
+    def test_delete_missing_returns_404(self, mocker):
+        db = MagicMock()
+        db.get.return_value = None
+        memory = MagicMock()
+        client = self._delete_client(mocker, db, None, memory)
+
+        resp = client.post("/memory/refine/delete", json={"candidate_id": 999})
+
+        assert resp.status_code == 404
+        memory.delete.assert_not_called()
+
+
 class TestRefineHistory:
     def test_history_lists_applied_and_rolled_back(self, mocker):
         db = MagicMock()
@@ -360,6 +430,7 @@ class TestRefineAuth:
         [
             ("POST", "/memory/refine/apply", {"candidate_id": 1}),
             ("POST", "/memory/refine/rollback", {"candidate_id": 1}),
+            ("POST", "/memory/refine/delete", {"candidate_id": 1, "with_memories": False}),
             ("GET", "/memory/refine/history", None),
         ],
     )
@@ -449,11 +520,12 @@ class TestRefineAdminScope:
         db = MagicMock()
         memory = MagicMock()
         mocker.patch.object(refine_router, "get_memory_instance", return_value=memory)
+        mocker.patch.object(refine_router, "_collect_stale_items", return_value=[])
         mocker.patch.object(refine_router, "_discover_users", return_value=["u1", "u2"])
         mocker.patch.object(
             refine_router,
             "discover_refine_candidates",
-            side_effect=lambda mem, sess, uid: [
+            side_effect=lambda mem, sess, uid, items=None: [
                 {
                     "id": 1,
                     "user_id": uid,
