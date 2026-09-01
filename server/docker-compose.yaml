@@ -120,6 +120,7 @@ services:
     - mem0_network
     environment:
     - TZ=Asia/Shanghai
+    - FALKORDB_ARGS=TIMEOUT_DEFAULT 120000 TIMEOUT_MAX 300000
     command:
     - redis-server
     - --dir
