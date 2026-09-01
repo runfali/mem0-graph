@@ -119,6 +119,23 @@ function makeCtx(config) {
         // 模拟宿主解析结果：schema 默认值 + composition base 合并成完整 section
         scopeValue = resolveConfigManually(schema, options.base || {})
         return scope
+      },
+      // dsh 0.1.2-alpha：installSettingsSection 帮助函数已移除，宿主契约为
+      // settings.installSection(owner, ns, schema, entry, hooks)——按 dsh-settings
+      // alpha.3 真实语义模拟（register(base=entry) → setSource → 卸载回落 effect →
+      // onChange 同步首发 → watch 通知）。
+      installSection(owner, ns, schema, entry, hooks) {
+        const sectionScope = this.register(ns, schema, {
+          base: entry,
+          ...(hooks.validate === undefined ? {} : { validate: hooks.validate })
+        })
+        hooks.setSource(() => sectionScope.get())
+        ctx.effect(() => () => {
+          hooks.setSource(() => entry)
+          hooks.onChange()
+        }, 'settings:installSection-fallback')
+        hooks.onChange()
+        sectionScope.watch(() => hooks.onChange())
       }
     },
     tools: { register: (def) => tools.push(def) },

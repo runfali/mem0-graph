@@ -22,7 +22,6 @@
  * 设置命名空间 mem0 与浏览器半共享；设置页改动即时生效（applies=live）。
  */
 import z from '@deepseek-ai/schemastery'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { isTrivialPrompt } from './guards.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { CircuitBreaker, Mem0Client, isClientError, retuneBreaker } from './backend.js'
@@ -34,8 +33,10 @@ import { buildResultList, truncateOutput } from './formatting.js'
 /** Cordis 插件短名（路由/日志用）。 */
 export const name = 'mem0'
 
-/** Settings 命名空间（浏览器卡片与 host 共用同一字符串）。 */
-export const MEM0_SETTINGS_NAMESPACE = settingsNamespace('mem0')
+/** Settings 命名空间（浏览器卡片与 host 共用同一字符串）。
+ * dsh 0.1.2-alpha 起 settingsNamespace() brand 辅助已从 dsh-settings 移除；
+ * 命名空间改为在 settings.register/installSection 处校验（小写连字符标识符）。 */
+export const MEM0_SETTINGS_NAMESPACE = 'mem0'
 
 /** 需要工具注册表与提示词注册表就绪再 apply；agents 保证补注册时 registry 可用。 */
 export const inject = ['tools', 'systemPrompt', 'agents']
@@ -143,13 +144,21 @@ function toolFail(error) {
  */
 export function apply(ctx, config = {}) {
   let current = () => config
-  installSettingsSection(ctx, MEM0_SETTINGS_NAMESPACE, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: () => {
-      // 各消费点每 tick / 每次调用读取 current()，无需主动刷新
-    }
+  // dsh 0.1.2-alpha：独立 installSettingsSection 帮助函数已从 dsh-settings 移除，
+  // 同样的接线改为 provider 上的 settings.installSection(owner, ns, schema, entry, hooks)
+  // （源码级核对：register(base=entry) → setSource(scope.get) → 卸载回落 effect →
+  // onChange() 同步首发 → scope.watch 持续通知）。
+  // hooks 在 inject 回调内同步执行——此处 onChange 为空操作、setSource 只赋值上方
+  // 已声明的 current，无 TDZ 风险，故保持原位置。
+  ctx.inject(['settings'], (sctx) => {
+    sctx.settings.installSection(ctx, MEM0_SETTINGS_NAMESPACE, Config, config, {
+      setSource: (source) => {
+        current = source
+      },
+      onChange: () => {
+        // 各消费点每 tick / 每次调用读取 current()，无需主动刷新
+      }
+    })
   })
 
   /** 带前缀的结构化日志（保持 ctx.logger 方法调用形式）。
