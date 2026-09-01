@@ -2,3 +2,5 @@ node_modules/
 lib/*.map
 *.log
 .DS_Store
+graphify-out/
+.pnpm-store/
