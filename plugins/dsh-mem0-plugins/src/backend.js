@@ -95,12 +95,16 @@ export class Mem0HttpError extends Error {
  * 与 hermes _is_client_error 同源：404/400 状态 + "not found"/"valid uuid" 文案。
  * 本 fork 服务端把 ValueError/Mem0ValidationError 统一映射 400，因此 400 也
  * 视为客户端错误（服务端故障都以 5xx 呈现）。
+ * 422 校验拒绝同为请求方错误（2026-09-01 审计 P1）：指向第三方标准 mem0
+ * server 时超长/非法 payload 会回 422——计熔断会把单点用户错误放大成全局
+ * 短路（session-track 快轨同款教训），故一并豁免。判据：4xx=请求方错误
+ * 不计熔断，5xx/网络错/超时=服务不可用计熔断。
  */
 export function isClientError(error) {
   if (!error) return false;
-  if (error instanceof Mem0HttpError) return error.status === 404 || error.status === 400;
+  if (error instanceof Mem0HttpError) return error.status === 404 || error.status === 400 || error.status === 422;
   const text = String(error && error.message ? error.message : error).toLowerCase();
-  return text.includes('404') || text.includes('400') || text.includes('not found') || text.includes('valid uuid');
+  return text.includes('404') || text.includes('400') || text.includes('422') || text.includes('not found') || text.includes('valid uuid');
 }
 
 /** 归一化响应体：{results:[...]} 或裸数组 → 数组。 */

@@ -436,7 +436,10 @@ export function apply(ctx, config = {}) {
       lastUserBySession.clear()
       userByTurn.clear()
       lastAssistantByTurn.clear()
-      // 返回冲刷 promise：cordis teardown 会 await，关停时 in-flight 写入不丢
+      // 先标记卸载：此后失败的 in-flight 直写降级直接诚实丢弃（不再回插无人
+      // 冲刷的桶，2026-09-01 审计 P3），再冲剩余桶；返回冲刷 promise：
+      // cordis teardown 会 await，关停时 in-flight 写入不丢
+      coalescer.dispose()
       return coalescer.flushAll('dispose')
     }
   }, 'mem0:coalesce-tick')

@@ -41,8 +41,12 @@ const RULES = [
   },
   {
     label: 'password',
-    // password=/passwd= 键值：保键打值（值可为裸词或引号串）
-    re: /\b(passwd|password)(\s*=\s*)("[^"]*"|'[^']*'|\S+)/gi,
+    // password=/passwd= 键值：保键打值（值可为裸词或引号串）。
+    // 前缀用 (?<![A-Za-z0-9]) 而非 \b（2026-09-01 审计 P2）：'_' 是词字符，
+    // \b 在 DB_PASSWORD= / my_password= 这类下划线键名前不成立 → 单行 env 赋值
+    // 命令/日志里漏放（5 行+ 的整段 .env 另有 env-block 折叠兜底，单行无兜）。
+    // 后缀仍由 (\s*=\s*) 收紧：passwordhash= 不命中。
+    re: /(?<![A-Za-z0-9])(passwd|password)(\s*=\s*)("[^"]*"|'[^']*'|\S+)/gi,
     replace: (m, key, eq) => key + eq + '[REDACTED:password]'
   },
   {

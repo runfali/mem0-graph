@@ -76,7 +76,7 @@ export function sliceText(text, pieceChars) {
     // 自身被截也能定位），cut 落在标记区间内则回退到起点，整标记让给下一片。
     if (cut === limit) {
       const open = rest.lastIndexOf('[REDACTED:', cut - 1)
-      if (open > 0 && cut - open < 64) {
+      if (open >= 0 && cut - open < 64) {
         const close = rest.indexOf(']', open + 1)
         if (cut < (close >= 0 ? close : open + 24)) cut = open
       }
@@ -120,6 +120,13 @@ export class TidalCoalescer {
     // 同会话同 label 的脱敏告警去重（有界，防长会话泄漏）
     this.redactWarned = new Map();
     this.flushing = 0;
+    this.disposed = false;
+  }
+
+  /** 标记已卸载（宿主 teardown 调用）：此后失败降级不再回插桶（无人冲刷，
+   *  回插=内存泄漏+数据假装待重试），改为诚实计数丢弃（2026-09-01 审计 P3）。 */
+  dispose() {
+    this.disposed = true;
   }
 
   /**
@@ -328,8 +335,19 @@ export class TidalCoalescer {
       });
   }
 
-  /** 快路径失败降级：路由进同 key 桶，复用挂起/重试/短路语义。 */
+  /** 快路径失败降级：路由进同 key 桶，复用挂起/重试/短路语义。
+   *  已 dispose（插件卸载后 in-flight 直写才失败）时不再回插——宿主 teardown
+   *  已冲过桶且 tick 已停，回插的桶永远无人冲刷；诚实计数丢弃（原文仍在 dsh
+   *  会话日志可按 sessionId 回捞）。 */
   #demoteToBucket(item, messages, chars) {
+    if (this.disposed) {
+      this.stats.dropped += messages.length / 2;
+      if (this.log.warn) {
+        this.log.warn('mem0 direct write failed after dispose, dropping (session=' +
+          (item.sessionId || '<empty>') + ', reason: plugin unloaded)');
+      }
+      return;
+    }
     const key = this.#key(item.userId, item.sessionId);
     const ts = now();
     let bucket = this.buckets.get(key);

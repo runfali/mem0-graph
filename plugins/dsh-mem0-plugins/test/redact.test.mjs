@@ -62,6 +62,13 @@ test('password: 裸词与引号串都打码，键保留；无 = 的普通词不�
   assert.ok(r.text.includes('passwd=[REDACTED:password]'))
   const neg = redactSecrets('password 这个词单独出现没有值，别打码')
   assert.deepEqual(neg.hits, [])
+  // 2026-09-01 审计 P2：下划线键名前缀（DB_PASSWORD=）此前被 \b 词边界漏放
+  const env = redactSecrets('docker run -e DB_PASSWORD=supersecret -e APP_PORT=8888')
+  assert.ok(env.text.includes('DB_PASSWORD=[REDACTED:password]'), '下划线前缀键名命中')
+  const env2 = redactSecrets('export my_password="let me in"')
+  assert.ok(env2.text.includes('my_password=[REDACTED:password]'), '引号值下划线前缀命中')
+  const hash = redactSecrets('passwordhash=x123')
+  assert.deepEqual(hash.hits, [], 'passwordhash= 不误伤')
 })
 
 // ---- .env 块（KEY=VALUE 累计 ≥5 行；注释/空行夹缝不打断） -----------------------

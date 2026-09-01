@@ -232,6 +232,9 @@ console.log('== 单元：熔断器 ==')
   await new Promise((r) => setTimeout(r, 60))
   assert.equal(br.open, false); ok('冷却后自动复位')
   assert.equal(isClientError(new Mem0HttpError(404, '/memories/x', '')), true); ok('404 归类客户端错误')
+  assert.equal(isClientError(new Mem0HttpError(400, '/memories/x', '')), true); ok('400 校验拒绝归类客户端错误')
+  assert.equal(isClientError(new Mem0HttpError(422, '/memories/x', '')), true); ok('422 校验拒绝归类客户端错误（不计熔断，2026-09-01 审计 P1）')
+  assert.equal(isClientError(new Mem0HttpError(500, '/memories/x', '')), false); ok('5xx 服务端故障仍计熔断')
 }
 
 console.log('== 单元：查询蒸馏 ==')
@@ -1051,6 +1054,16 @@ console.log('== 单元：P3 三残留修复（2026-08-29 二次）==')
   assert.ok(qn.buckets.get('u\u0000s'), '未超龄超时小桶保留待重试')
   assert.equal(qn.stats.dropped, 0); ok('未超龄超时小桶不受影响')
 
+  // F5d) 已 dispose 后 in-flight 直写失败 → 降级诚实丢弃，不回插无人冲刷的桶
+  // （2026-09-01 审计 P3：热卸载后 tick 已停，回插=内存泄漏+数据假装待重试）
+  const fastConfig = () => ({ enabled: true, idleMs: 60000, windowMs: 60000, maxTurns: 200, maxChars: 1000000, fastpathChars: 1000, cooldownMs: 120000 })
+  const qz = new TidalCoalescer({ resolve: fastConfig, addFn: async () => { throw new Error('mem0 server unreachable at http://x (fetch failed)') }, log: {} })
+  qz.dispose()
+  qz.route({ userId: 'u', sessionId: 's', userContent: 'x'.repeat(5000), assistantContent: '' }) // 5000 > fastpathChars=1000 → 直写
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(qz.buckets.size, 0, 'dispose 后直写失败不回插桶')
+  assert.ok(qz.stats.dropped >= 1, 'dispose 后直写失败计数 dropped'); ok('dispose 后降级诚实丢弃')
+
   // F6) REDACTED 标记落在硬切边界 → 整标记让给下一片，不拆半
   const prefix = 'a'.repeat(1990)
   const marked = prefix + ' [REDACTED:openai-key] 尾部内容' + 'b'.repeat(40)
@@ -1065,6 +1078,12 @@ console.log('== 单元：P3 三残留修复（2026-08-29 二次）==')
     assert.ok(opens === closes, '标记必须整片出现（不拆半）: ' + JSON.stringify(p.slice(-40)))
   }
   ok('REDACTED 标记不跨片拆半')
+
+  // F6b) 标记起点恰在文本 0 位（open===0 边界，2026-09-01 审计 P3 顺手修复）
+  const headMarked = '[REDACTED:openai-key] ' + 'c'.repeat(4100)
+  const hp = sliceText(headMarked, 2000)
+  assert.ok(hp.join('').includes('[REDACTED:openai-key]'), '起点标记完整存活')
+  assert.ok(hp[0].includes('[REDACTED:openai-key]'), '标记保留在首片（不回退成空逻辑）'); ok('REDACTED 起点 0 位边界安全')
 }
 
 console.log('== 中断轮不入记忆 ==')
