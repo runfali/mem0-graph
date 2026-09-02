@@ -64,6 +64,7 @@ from mem0.memory.utils import (
     parse_vision_messages,
     process_telemetry_filters,
     remove_code_blocks,
+    strip_prose_prefix,
 )
 from mem0.utils.entity_extraction import extract_entities, extract_entities_batch
 from mem0.utils.factory import (
@@ -1441,7 +1442,7 @@ class Memory(MemoryBase):
                 except Exception as e:
                     logger.error(f"LLM extraction failed on chunk {_ci}: {e}")
                     raise LLMError(f"LLM extraction failed: {e}") from e
-                _resp = remove_code_blocks(_resp)
+                _resp = strip_prose_prefix(remove_code_blocks(_resp))
                 if _resp and _resp.strip():
                     try:
                         _chunk_mems = json.loads(_resp, strict=False).get("memory", [])
@@ -1478,7 +1479,7 @@ class Memory(MemoryBase):
                 raise LLMError(f"LLM extraction failed: {e}") from e
 
             try:
-                response = remove_code_blocks(response)
+                response = strip_prose_prefix(remove_code_blocks(response))
                 if not response or not response.strip():
                     extracted_memories = []
                 else:
@@ -3812,7 +3813,7 @@ class AsyncMemory(MemoryBase):
                 except Exception as e:
                     logger.error(f"LLM extraction failed on chunk {_ci} (async): {e}")
                     raise LLMError(f"LLM extraction failed: {e}") from e
-                _resp = remove_code_blocks(_resp)
+                _resp = strip_prose_prefix(remove_code_blocks(_resp))
                 if _resp and _resp.strip():
                     try:
                         _chunk_mems = json.loads(_resp, strict=False).get("memory", [])
@@ -3850,7 +3851,7 @@ class AsyncMemory(MemoryBase):
                 raise LLMError(f"LLM extraction failed: {e}") from e
 
             try:
-                response = remove_code_blocks(response)
+                response = strip_prose_prefix(remove_code_blocks(response))
                 if not response or not response.strip():
                     extracted_memories = []
                 else:

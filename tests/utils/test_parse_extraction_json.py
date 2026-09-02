@@ -5,6 +5,7 @@ json.loads 全失败即 extracted_memories=[]，整批记忆白跑
 （日志 "JSON parse failed after remove_code_blocks/extract_json"）。
 """
 
+import json
 import os
 import sys
 
@@ -12,7 +13,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "mem0"))
 
-from mem0.memory.utils import parse_extraction_json  # noqa: E402
+from mem0.memory.utils import (  # noqa: E402
+    parse_extraction_json,
+    remove_code_blocks,
+    strip_prose_prefix,
+)
 
 
 class TestDirectParse:
@@ -66,6 +71,53 @@ class TestPrefixSalvage:
         # 损坏在两个对象之间：能救回第一个，第二个开始的垃圾不阻塞
         raw = '{"memory": [{"id": "0", "text": "a"}, {oops}, {"id": "2"}]}'
         assert parse_extraction_json(raw) == [{"id": "0", "text": "a"}]
+
+
+class TestStripProsePrefix:
+    """strip_prose_prefix：剥除 JSON 前的叙述前缀（2026-09-02 生产形态）。"""
+
+    def test_chinese_prose_before_json(self):
+        raw = '观察到的新事实与现有记忆 id=0 高度重叠：\n\n{"memory": [{"id": "0", "text": "a"}]}'
+        assert strip_prose_prefix(raw) == '{"memory": [{"id": "0", "text": "a"}]}'
+
+    def test_english_prose_before_json(self):
+        raw = 'Looking at the new messages, I need to extract facts.\n{"memory": []}'
+        assert strip_prose_prefix(raw) == '{"memory": []}'
+
+    def test_prose_before_array(self):
+        raw = '分析如下：\n[{"id": "0"}]'
+        assert strip_prose_prefix(raw) == '[{"id": "0"}]'
+
+    def test_pure_json_unchanged(self):
+        raw = '{"memory": []}'
+        assert strip_prose_prefix(raw) == '{"memory": []}'
+
+    def test_no_json_unchanged(self):
+        raw = "纯叙述，没有任何结构。"
+        assert strip_prose_prefix(raw) == raw
+
+    def test_empty_unchanged(self):
+        assert strip_prose_prefix("") == ""
+
+    def test_think_tags_stripped_first(self):
+        raw = '<think>reasoning</think>{"memory": []}'
+        assert strip_prose_prefix(raw) == '{"memory": []}'
+
+    def test_production_shape_prose_plus_fence(self):
+        # 生产实证形态：叙述前缀 + 围栏包裹 JSON（remove_code_blocks 正则不匹配）
+        raw = (
+            "观察到的新事实与现有记忆 id=0 高度重叠，但新消息补充了细节：\n\n"
+            "```json\n"
+            '{"memory": [{"id": "0", "text": "a", "event": "NONE"}]}\n'
+            "```"
+        )
+        out = strip_prose_prefix(remove_code_blocks(raw))
+        assert json.loads(out)["memory"][0]["id"] == "0"
+
+    def test_end_to_end_with_parse_extraction_json(self):
+        # 叙述前缀 + 中段截断 → 剥前缀后 salvage 仍能收回完整对象
+        raw = '观察到的新事实与现有记忆 id=0 高度重叠。\n{"memory": [{"id": "0", "text": "a"}, {"id": "1", "text": "b'
+        assert parse_extraction_json(strip_prose_prefix(raw)) == [{"id": "0", "text": "a"}]
 
 
 def _dumps(obj):

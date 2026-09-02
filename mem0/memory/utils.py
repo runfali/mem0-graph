@@ -244,6 +244,32 @@ def parse_extraction_json(text: str) -> list:
     return items
 
 
+_JSON_START_RE = re.compile(r"[{\[]")
+_TRAILING_FENCE_RE = re.compile(r"```\s*$")
+
+
+def strip_prose_prefix(text: str) -> str:
+    """剥除 JSON 前的叙述前缀与围栏残留（抽取调用点专用）。
+
+    sensenova 等推理模型偶尔在 JSON 前先输出一段分析叙述（"观察到的新事实
+    与现有记忆 id=0 高度重叠…"），或把 JSON 围在代码围栏里而围栏前还有叙述。
+    remove_code_blocks 的围栏正则只认整体包裹、thinking 剥除只认
+    thinking/response 字面量与 <think> 标签，两类残留都会让 json.loads
+    在 char 0（或尾部 ```）失败。此函数定位首个 { 或 [，剥除其前的一切，
+    并去掉尾部围栏残留；全文无 JSON 结构时原样返回。
+    仅限抽取调用点在 remove_code_blocks 之后使用——procedural memory 等
+    纯文本响应不得套用。
+    ponytail: 尾部围栏之后若还有叙述文字仍需靠 parse_extraction_json 兜底；
+    日志若出现该形态再升级为括号配对截取。
+    """
+    text = _strip_think_tags(text).strip()
+    m = _JSON_START_RE.search(text)
+    if not m:
+        return text
+    body = text[m.start():] if m.start() else text
+    return _TRAILING_FENCE_RE.sub("", body).rstrip()
+
+
 def get_image_description(image_obj, llm, vision_details):
     """
     Get the description of the image
