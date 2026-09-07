@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { zhCN } from "date-fns/locale";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -16,6 +16,17 @@ import {
 } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -654,6 +665,12 @@ export default function AnalyticsPage() {
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const { user } = useAuth();
   const [generating, setGenerating] = useState(false);
+  // 闲置记忆批量选择：跨页累积的选择集（翻页不丢），批量删除后统一清空
+  const [staleSelectedIds, setStaleSelectedIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [staleBatchDeleteOpen, setStaleBatchDeleteOpen] = useState(false);
+  const [staleBatchBusy, setStaleBatchBusy] = useState(false);
 
   const {
     data: report = EMPTY_REPORT,
@@ -842,6 +859,71 @@ export default function AnalyticsPage() {
       ),
     [heat.stale],
   );
+
+  // 闲置记忆批量选择（与记忆管理页同模式）：全选=切换当页 10 条，跨页累积
+  const stalePageSize = 10;
+  const stalePageIds = staleByRecency
+    .slice(0, stalePageSize)
+    .map((m) => m.memory_id);
+  const staleAllPageSelected =
+    stalePageIds.length > 0 &&
+    stalePageIds.every((id) => staleSelectedIds.has(id));
+  const staleSomePageSelected =
+    stalePageIds.some((id) => staleSelectedIds.has(id)) &&
+    !staleAllPageSelected;
+  // 批量删除只作用于仍在当前闲置清单里的 id：refetch 后已被保留/清理的
+  // 记忆不再进清单，残留选择不能连带误删
+  const staleEffectiveIds = staleByRecency
+    .filter((m) => staleSelectedIds.has(m.memory_id))
+    .map((m) => m.memory_id);
+
+  const toggleStaleSelect = (id: string) => {
+    setStaleSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleStaleSelectAll = () => {
+    setStaleSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (staleAllPageSelected) stalePageIds.forEach((id) => next.delete(id));
+      else stalePageIds.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const handleStaleBatchDelete = async () => {
+    const ids = staleEffectiveIds;
+    setStaleBatchBusy(true);
+    try {
+      for (const id of ids) {
+        await api.delete(MEMORY_ENDPOINTS.BY_ID(id));
+      }
+      toast({
+        title: `已清理 ${ids.length} 条闲置记忆`,
+        variant: "success",
+      });
+      setStaleSelectedIds(new Set());
+      setStaleBatchDeleteOpen(false);
+      void refetch();
+    } catch (error) {
+      // 同记忆管理页：部分失败也清空选择集——残留已删 id 会让再次批量删除
+      // 对 404 重试死循环（选择集永远清不掉、已删部分整体报失败）
+      setStaleSelectedIds(new Set());
+      setStaleBatchDeleteOpen(false);
+      void refetch();
+      toast({
+        title: "批量清理失败",
+        description: getErrorMessage(error),
+        variant: "destructive",
+      });
+    } finally {
+      setStaleBatchBusy(false);
+    }
+  };
   const boostByRecency = useMemo(
     () =>
       [...heat.boost_adjustments].sort((a, b) =>
@@ -954,6 +1036,22 @@ export default function AnalyticsPage() {
   ];
 
   const idleColumns = [
+    {
+      key: "memory_id" as const,
+      label: "",
+      width: 40,
+      headerVariant: "check" as const,
+      cellVariant: "flush" as const,
+      className: "px-4 py-2.5 align-middle",
+      render: (_: string, row: EvolveIdleMemory) => (
+        <div className="flex items-center">
+          <Checkbox
+            checked={staleSelectedIds.has(row.memory_id)}
+            onCheckedChange={() => toggleStaleSelect(row.memory_id)}
+          />
+        </div>
+      ),
+    },
     {
       key: "memory_id" as const,
       label: "记忆 ID",
@@ -1350,12 +1448,41 @@ export default function AnalyticsPage() {
                   生成精炼候选
                 </Button>
               </div>
+              {staleEffectiveIds.length > 0 && (
+                <div className="mb-3 flex items-center justify-between rounded-lg border border-memBorder-primary bg-surface-default-tertiary px-4 py-2.5">
+                  <span className="text-sm text-onSurface-default-primary">
+                    已选 {staleEffectiveIds.length} 条
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setStaleSelectedIds(new Set())}
+                    >
+                      清空选择
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="xs"
+                      onClick={() => setStaleBatchDeleteOpen(true)}
+                    >
+                      <Trash2 className="size-3.5 mr-1" />
+                      批量清理
+                    </Button>
+                  </div>
+                </div>
+              )}
               {heat.stale.length > 0 ? (
                 <DataTable
                   data={staleByRecency}
                   columns={idleColumns}
                   getRowKey={(row) => row.memory_id}
                   pagination={{ pageSize: 10 }}
+                  selectAll={{
+                    checked: staleAllPageSelected,
+                    indeterminate: staleSomePageSelected,
+                    onSelectAll: toggleStaleSelectAll,
+                  }}
                 />
               ) : (
                 <NoData />
@@ -1453,6 +1580,36 @@ export default function AnalyticsPage() {
           void handleDeleteCandidate(c, withMemories);
         }}
       />
+
+      <AlertDialog
+        open={staleBatchDeleteOpen}
+        onOpenChange={setStaleBatchDeleteOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量清理闲置记忆</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定清理选中的 {staleEffectiveIds.length}{" "}
+              条闲置记忆？删除后不可恢复，热度数据会一并清理。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={staleBatchBusy}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={staleBatchBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleStaleBatchDelete();
+              }}
+            >
+              {staleBatchBusy ? "清理中..." : "确认清理"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
