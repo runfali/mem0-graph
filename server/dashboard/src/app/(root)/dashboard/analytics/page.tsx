@@ -860,22 +860,18 @@ export default function AnalyticsPage() {
     [heat.stale],
   );
 
-  // 闲置记忆批量选择（与记忆管理页同模式）：全选=切换当页 10 条，跨页累积
-  const stalePageSize = 10;
-  const stalePageIds = staleByRecency
-    .slice(0, stalePageSize)
-    .map((m) => m.memory_id);
-  const staleAllPageSelected =
-    stalePageIds.length > 0 &&
-    stalePageIds.every((id) => staleSelectedIds.has(id));
-  const staleSomePageSelected =
-    stalePageIds.some((id) => staleSelectedIds.has(id)) &&
-    !staleAllPageSelected;
   // 批量删除只作用于仍在当前闲置清单里的 id：refetch 后已被保留/清理的
   // 记忆不再进清单，残留选择不能连带误删
   const staleEffectiveIds = staleByRecency
     .filter((m) => staleSelectedIds.has(m.memory_id))
     .map((m) => m.memory_id);
+  // 闲置记忆批量选择：全选=整个闲置清单（跨页）。DataTable 分页是内部态，
+  // 父组件拿不到当前页——按页全选会在第 2 页起与可见行错位，故取全清单语义，
+  // 范围由批量栏「已选 N 条」明示
+  const staleAllSelected =
+    staleByRecency.length > 0 &&
+    staleEffectiveIds.length === staleByRecency.length;
+  const staleSomeSelected = staleEffectiveIds.length > 0 && !staleAllSelected;
 
   const toggleStaleSelect = (id: string) => {
     setStaleSelectedIds((prev) => {
@@ -887,12 +883,11 @@ export default function AnalyticsPage() {
   };
 
   const toggleStaleSelectAll = () => {
-    setStaleSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (staleAllPageSelected) stalePageIds.forEach((id) => next.delete(id));
-      else stalePageIds.forEach((id) => next.add(id));
-      return next;
-    });
+    setStaleSelectedIds(
+      staleAllSelected
+        ? new Set()
+        : new Set(staleByRecency.map((m) => m.memory_id)),
+    );
   };
 
   const handleStaleBatchDelete = async () => {
@@ -1479,8 +1474,8 @@ export default function AnalyticsPage() {
                   getRowKey={(row) => row.memory_id}
                   pagination={{ pageSize: 10 }}
                   selectAll={{
-                    checked: staleAllPageSelected,
-                    indeterminate: staleSomePageSelected,
+                    checked: staleAllSelected,
+                    indeterminate: staleSomeSelected,
                     onSelectAll: toggleStaleSelectAll,
                   }}
                 />
