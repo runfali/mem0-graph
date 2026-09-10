@@ -226,7 +226,7 @@ window.__ModuleLoader__.load({
           self.saving = true;
           self.failed = false;
           self.publish();
-          // 快照本次计划涉及的键（引用级）：保存(可能长达 requestTimeoutMs=300s)
+          // 快照本次计划涉及的键（引用级）：保存(可能长达 requestTimeoutMs=420s)
           // 期间用户的并发编辑会替换 staged 里的对象——引用变化即保留，绝不静默丢输入
           const planned = [];
           plan.forEach((item) => {
@@ -351,7 +351,7 @@ window.__ModuleLoader__.load({
       "field.breakerCooldownMs": "熔断冷却（毫秒）",
       "hint.breakerCooldownMs": "熔断后经过该时长自动恢复，默认 120000",
       "field.requestTimeoutMs": "单次请求总超时（毫秒）",
-      "hint.requestTimeoutMs": "插件到 mem0 server 的单请求总闸（search/add 共用），与 hermes 一致默认 300000",
+      "hint.requestTimeoutMs": "插件到 mem0 server 的单请求总闸（search/add 共用），与 hermes 一致默认 420000",
       "group.output": "工具输出硬化",
       "field.outputMaxLines": "回执总行数上限",
       "hint.outputMaxLines": "工具回执总行数上限，超出保留头部并显式标注，默认 200；当前 topK≤50 时是保险丝（防未来放开条数/服务端异常返回超量）",

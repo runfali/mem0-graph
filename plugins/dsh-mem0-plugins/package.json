@@ -1,6 +1,6 @@
 {
   "name": "dsh-mem0-plugins",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Mem0 persistent memory for the DeepSeek Harness web profile — automatic recall injection, tidal-coalesced memory writes, and mem0_search/add/update/delete tools against a self-hosted Mem0 server (X-API-Key). Zero-intrusion bundle plugin; no dsh source changes.",
   "type": "module",
   "main": "src/index.js",
@@ -30,15 +30,21 @@
     "memory",
     "self-hosted"
   ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs && node test/smoke.mjs && node test/client-smoke.mjs"
+  },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-settings": "^0.1.2-alpha.3",
-    "@deepseek-ai/dsh-tools": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "dsh": {
+    "engines": {
+      "dsh": ">=0.1.2-alpha.3 <0.2.0 || >=0.1.5-alpha.1 <0.1.6"
+    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
