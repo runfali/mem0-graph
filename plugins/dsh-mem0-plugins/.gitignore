@@ -4,3 +4,4 @@ lib/*.map
 .DS_Store
 graphify-out/
 .pnpm-store/
+pnpm-lock.yaml
