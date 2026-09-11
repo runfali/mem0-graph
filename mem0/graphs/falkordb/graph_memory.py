@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_CACHE = 256
 
+# 类型化关系模式单条 Cypher 的类型备选数上限。
+# 实测 FalkorDB 对超长 `a`|`b`|... 备选列表会静默丢结果（本图 ≥300 条丢 ~40%），故分块。
+_CN_TYPE_CHUNK_MAX = 128
+
 # 图搜索 token 上限（环境变量 MEM0_GRAPH_SEARCH_TOKENS，不设置或设为 0 表示不限制）
 # 之前设 25 是为控制 voyageai embed 输入规模；图数据用独立 bge-m3 后通常不需要此限制
 _MAX_GRAPH_SEARCH_TOKENS = int(os.environ.get("MEM0_GRAPH_SEARCH_TOKENS", "0"))
@@ -439,41 +443,90 @@ class MemoryGraph:
                 _expanded_tokens.add(token)
 
         if _expanded_tokens:
-            _type_clauses = []
-            _or_params = {}
-            for _i, _token in enumerate(_expanded_tokens):
-                _tpname = f"_ct{_i}"
-                _type_clauses.append(f"type(r) STARTS WITH ${_tpname}")
-                _or_params[_tpname] = _token
-
-            _where_clause = (
-                f"WHERE ({' OR '.join(_type_clauses)}) "
-                f"AND r.{_RELATION_INVALIDATED_AT} IS NULL"
+            # 2026-09-11 性能修复：`type(r) STARTS WITH $tok` 走不了关系类型矩阵，
+            # 在 FalkorDB 上退化为 O(V×E) 全量遍历（本图 1350 节点 / 8770 关系实测
+            # 单次 8.0s、~1 核；两条并发即 cpu%200）。改为「把 token 在 Python 侧
+            # 展开成具体关系类型，再用类型化模式 -[:`a`|`b`]-> 匹配」：
+            # 谓词语义等价（前缀匹配原样复刻），实测同图 8.0s → 40ms，结果集逐行相同。
+            # 类型清单每次实时读取（CALL db.relationshipTypes()，~0.65ms）不做缓存——
+            # 本图 8770 条关系有 3713 种类型且持续新增，缓存会漏召回。
+            # 护栏：① 单条 Cypher 类型备选数 ≤ _CN_TYPE_CHUNK_MAX（实测 ≥300 条会静默漏行）；
+            #       ② 含反引号无法安全内联、或类型清单不可用/查询失败 → 回退旧 STARTS WITH（保召回）。
+            _cn_limit = int(limit * 3)
+            _cn_cols = (
+                "a.name AS source, id(a) AS source_id, type(r) AS relationship, "
+                "id(r) AS relation_id, b.name AS destination, id(b) AS destination_id, "
+                "r.relation_cn AS relation_cn"
             )
+            _cn_results = []
+            _fallback = False
 
             try:
-                _cn_results = self.graph.query(
-                    f"""
-                    MATCH (a:`{_cn_label}`)-[r]->(b:`{_cn_label}`)
-                    {_where_clause}
-                    RETURN a.name AS source, id(a) AS source_id, type(r) AS relationship,
-                           id(r) AS relation_id, b.name AS destination, id(b) AS destination_id,
-                           r.relation_cn AS relation_cn
-                    LIMIT {int(limit * 3)}
-                    """,
-                    params=_or_params,
-                    user_id=_cn_uid,
-                )
-                for item in _cn_results:
-                    rid = item.get("relation_id")
-                    if rid not in _seen_relation_ids:
-                        _seen_relation_ids.add(rid)
-                        item["recall_channel"] = "contains"
-                        search_output.append(item)
+                _all_types = [
+                    _r.get("relationshipType")
+                    for _r in self.graph.query("CALL db.relationshipTypes()", user_id=_cn_uid)
+                    if _r.get("relationshipType")
+                ]
+                if not _all_types:
+                    # 空图（无任何关系类型）→ 本通道必然无命中，无需回退重扫
+                    _usable_types = []
+                else:
+                    _usable_types, _seen_types = [], set()
+                    for _t in _all_types:
+                        if _t in _seen_types:
+                            continue
+                        if not any(_t.startswith(_tok) for _tok in _expanded_tokens):
+                            continue
+                        _seen_types.add(_t)
+                        if "`" in _t:
+                            _fallback = True   # 无法安全内联 → 用原 token 回退旧查询
+                            break
+                        _usable_types.append(_t)
+
+                for _i in range(0, len(_usable_types), _CN_TYPE_CHUNK_MAX):
+                    _pattern = "|".join(f"`{_t}`" for _t in _usable_types[_i:_i + _CN_TYPE_CHUNK_MAX])
+                    _cn_results += self.graph.query(
+                        f"""
+                        MATCH (a:`{_cn_label}`)-[r:{_pattern}]->(b:`{_cn_label}`)
+                        WHERE r.{_RELATION_INVALIDATED_AT} IS NULL
+                        RETURN {_cn_cols}
+                        LIMIT {_cn_limit}
+                        """,
+                        user_id=_cn_uid,
+                    )
             except Exception:
                 logger.debug(
-                    "relation type STARTS WITH query failed for tokens %s", _expanded_tokens, exc_info=True,
+                    "typed relation pattern failed for tokens %s, falling back", _expanded_tokens, exc_info=True,
                 )
+                _fallback = True
+
+            if _fallback:
+                _type_clauses, _or_params = [], {}
+                for _i, _token in enumerate(_expanded_tokens):
+                    _type_clauses.append(f"type(r) STARTS WITH $_ct{_i}")
+                    _or_params[f"_ct{_i}"] = _token
+                try:
+                    _cn_results += self.graph.query(
+                        f"""
+                        MATCH (a:`{_cn_label}`)-[r]->(b:`{_cn_label}`)
+                        WHERE ({' OR '.join(_type_clauses)}) AND r.{_RELATION_INVALIDATED_AT} IS NULL
+                        RETURN {_cn_cols}
+                        LIMIT {_cn_limit}
+                        """,
+                        params=_or_params,
+                        user_id=_cn_uid,
+                    )
+                except Exception:
+                    logger.debug(
+                        "relation type STARTS WITH query failed for tokens %s", _expanded_tokens, exc_info=True,
+                    )
+
+            for item in _cn_results[:_cn_limit]:
+                rid = item.get("relation_id")
+                if rid not in _seen_relation_ids:
+                    _seen_relation_ids.add(rid)
+                    item["recall_channel"] = "contains"
+                    search_output.append(item)
 
         _cn_hits = len(search_output) - _vector_hits
 
