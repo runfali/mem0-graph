@@ -19,12 +19,28 @@ logger = logging.getLogger(__name__)
 SIMILARITY_THRESHOLD = 0.75
 MIN_GROUP_SIZE = 3
 MAX_SUMMARY_COUNT = 3
+# Safety cap only: a runaway generation guard, not a display limit. The DB
+# column holds 255 chars, so nothing below is clamped in practice.
+MAX_TOPIC_CHARS = 60
 
 REFINE_SYSTEM_PROMPT = (
     "你是记忆精炼器。把以下 N 条碎记忆合并为 1-3 条高层抽象事实。"
     "要求：保留关键主体、时间、数字、关系；去掉过程细节与重复；每条自包含；"
-    '只输出 JSON {"topic": "简短主题，不超过20字", "summary": ["...", "..."]}。'
+    '只输出 JSON {"topic": "一句话短标题，写完整、不要中途截断", "summary": ["...", "..."]}。'
 )
+
+
+def _clean_topic(raw, fallback: str = "") -> str:
+    """Normalise an LLM topic into a complete one-line title.
+
+    Never truncates to a display width — the old 20-char slice was what made
+    titles read as half sentences ("mem0_falkordb 审计修复与未"). Trimming is
+    bounded only by MAX_TOPIC_CHARS, a runaway guard.
+    """
+    topic = str(raw).strip() if raw else ""
+    if not topic:
+        topic = fallback.strip()
+    return topic[:MAX_TOPIC_CHARS]
 
 
 def _cosine(a, b) -> float:
@@ -54,7 +70,9 @@ def cluster_candidates(
         min_group_size: groups with fewer members produce no candidate.
 
     Returns:
-        list of {"memory_ids": [...], "topic": str} for qualifying groups.
+        list of {"memory_ids": [...], "topic": ""} for qualifying groups. The
+        topic is intentionally empty here: it is written by the LLM at
+        proposal time, never derived from a raw memory's opening characters.
     """
     if not items:
         return []
@@ -93,7 +111,7 @@ def cluster_candidates(
         candidates.append(
             {
                 "memory_ids": [m["id"] for m in members],
-                "topic": (members[0].get("data", "") or "")[:20],
+                "topic": "",
             }
         )
     return candidates
@@ -126,21 +144,11 @@ def _parse_output(response) -> Optional[tuple[Optional[str], list[str]]]:
     cleaned = [str(s).strip() for s in summary if str(s).strip()]
     if not cleaned:
         return None
-    topic = parsed.get("topic")
-    topic = str(topic).strip() if topic else ""
-    if not topic:
-        topic = cleaned[0][:20]
-    return topic[:20], cleaned[:MAX_SUMMARY_COUNT]
+    return _clean_topic(parsed.get("topic"), fallback=cleaned[0]), cleaned[:MAX_SUMMARY_COUNT]
 
 
-def refine_group(memory, candidate: dict[str, Any]) -> dict:
-    """Produce an LLM-drafted summary for one candidate group (proposal only).
-
-    Never writes to the vector store. Returns {"status", "suggested_text"}:
-    status is 'proposed' on success, 'failed' on any LLM/parse/missing-text
-    failure (graceful, retryable).
-    """
-    memory_ids = candidate.get("memory_ids") or []
+def _load_texts(memory, memory_ids: list[str]) -> list[str]:
+    """Fetch the source texts of a candidate group; missing ids are skipped."""
     texts: list[str] = []
     for mid in memory_ids:
         try:
@@ -154,13 +162,13 @@ def refine_group(memory, candidate: dict[str, Any]) -> dict:
         data = payload.get("data")
         if data:
             texts.append(str(data))
+    return texts
 
-    if not texts:
-        logger.warning("refine: no texts found for candidate %s", memory_ids)
-        return {"status": "failed", "suggested_text": []}
 
+def _draft(memory, texts: list[str]) -> str:
+    """Ask the LLM for a {"topic", "summary"} draft; '' on any failure."""
     try:
-        response = memory.llm.generate_response(
+        return memory.llm.generate_response(
             messages=[
                 {"role": "system", "content": REFINE_SYSTEM_PROMPT},
                 {"role": "user", "content": "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))},
@@ -168,11 +176,50 @@ def refine_group(memory, candidate: dict[str, Any]) -> dict:
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("refine LLM failed: %s", e)
-        return {"status": "failed", "suggested_text": []}
+        return ""
 
-    summary = _parse_output(response)
+
+def refine_group(memory, candidate: dict[str, Any]) -> dict:
+    """Produce an LLM-drafted summary for one candidate group (proposal only).
+
+    Never writes to the vector store. Returns {"status", "suggested_text"}:
+    status is 'proposed' on success, 'failed' on any LLM/parse/missing-text
+    failure (graceful, retryable).
+    """
+    memory_ids = candidate.get("memory_ids") or []
+    texts = _load_texts(memory, memory_ids)
+
+    if not texts:
+        logger.warning("refine: no texts found for candidate %s", memory_ids)
+        return {"status": "failed", "suggested_text": [], "topic": None}
+
+    response = _draft(memory, texts)
+    summary = _parse_output(response) if response else None
     if summary is None:
         logger.warning("refine: unparseable LLM output: %r", response)
         return {"status": "failed", "suggested_text": [], "topic": None}
     topic, cleaned = summary
     return {"status": "proposed", "suggested_text": cleaned, "topic": topic}
+
+
+def refresh_topic(memory, candidate: dict[str, Any]) -> dict:
+    """Re-ask the LLM for just the title of an existing candidate group.
+
+    Backfill path for candidates created before titles were generated: their
+    topic is a 20-char slice of a raw memory. Nothing but the title is
+    produced, and the vector store is never touched. Returns
+    {"status": "updated", "topic": str} or {"status": "failed", "topic": None}.
+    """
+    memory_ids = candidate.get("memory_ids") or []
+    texts = _load_texts(memory, memory_ids)
+    if not texts:
+        logger.warning("refresh_topic: no texts found for candidate %s", memory_ids)
+        return {"status": "failed", "topic": None}
+
+    response = _draft(memory, texts)
+    summary = _parse_output(response) if response else None
+    if summary is None:
+        logger.warning("refresh_topic: unparseable LLM output: %r", response)
+        return {"status": "failed", "topic": None}
+    topic, _ = summary
+    return {"status": "updated", "topic": topic}

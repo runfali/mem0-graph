@@ -70,7 +70,9 @@ class TestClusterCandidates:
 
         assert len(candidates) == 1
         assert len(candidates[0]["memory_ids"]) == 3
-        assert len(candidates[0]["topic"]) <= 20
+        # Topic is produced by the LLM at proposal time, never by truncating
+        # a raw memory here (the old [:20] slice made half-sentence titles).
+        assert candidates[0]["topic"] == ""
 
     def test_three_distinct_topics_produce_three_candidates(self):
         memory = _memory_with_embeddings(
@@ -138,6 +140,51 @@ class TestRefineGroup:
 
         assert out["status"] == "proposed"
         assert out["topic"] == "高层抽象1"
+
+    def test_legacy_fallback_keeps_summary_whole_instead_of_truncating(self):
+        long_line = "这是一条相当长的高层抽象事实描述用于验证回退路径不截断"
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps({"summary": [long_line]}, ensure_ascii=False),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refine_group(memory, {"memory_ids": ["m1", "m2", "m3"]})
+
+        assert out["status"] == "proposed"
+        assert out["topic"] == long_line
+
+    def test_generated_topic_is_not_hard_truncated_at_20_chars(self):
+        topic = "RustDesk 登录态 secure_tcp 死锁根因与解决方案"
+        assert len(topic) == 33  # regression guard: the old code sliced this to 20
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps({"topic": topic, "summary": ["抽象"]}, ensure_ascii=False),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refine_group(memory, {"memory_ids": ["m1", "m2", "m3"]})
+
+        assert out["status"] == "proposed"
+        assert out["topic"] == topic
+
+    def test_overlong_topic_is_clamped_to_the_safety_cap(self):
+        topic = "长" * (refine_memory.MAX_TOPIC_CHARS + 25)
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps({"topic": topic, "summary": ["抽象"]}, ensure_ascii=False),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refine_group(memory, {"memory_ids": ["m1", "m2", "m3"]})
+
+        assert out["status"] == "proposed"
+        assert len(out["topic"]) == refine_memory.MAX_TOPIC_CHARS
+
+    def test_prompt_asks_for_a_full_sentence_title(self):
+        # The 20-char instruction is what made the model emit titles that read
+        # like cut-off sentences; it must ask for a complete one-line title.
+        assert "20" not in refine_memory.REFINE_SYSTEM_PROMPT
 
     def test_invalid_json_fails_gracefully(self):
         memory = _memory_with_embeddings([], llm_return="这不是JSON")
@@ -631,6 +678,144 @@ class TestDiscoverIdempotency:
         assert len(created) == 1
         assert created[0]["memory_ids"] == ["m1", "m2", "m3"]
         assert db.add.call_count == 1
+
+
+class TestRefreshTopic:
+    """Topic-only regeneration for candidates created before the title fix."""
+
+    def test_regenerates_topic_without_touching_vector_store(self):
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps(
+                {"topic": "RustDesk 登录态 secure_tcp 死锁根因与解决方案", "summary": ["摘要"]},
+                ensure_ascii=False,
+            ),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refresh_topic(
+            memory, {"memory_ids": ["m1", "m2", "m3"], "topic": "RustDesk 登录态 secure_"}
+        )
+
+        assert out == {
+            "status": "updated",
+            "topic": "RustDesk 登录态 secure_tcp 死锁根因与解决方案",
+        }
+        memory.vector_store.insert.assert_not_called()
+        memory.vector_store.update.assert_not_called()
+
+    def test_failed_when_no_source_texts_found(self):
+        memory = _memory_with_embeddings([], llm_return=json.dumps({"topic": "x"}))
+        memory.vector_store.get.return_value = None
+
+        out = refine_memory.refresh_topic(memory, {"memory_ids": ["m1"]})
+
+        assert out["status"] == "failed"
+        assert out["topic"] is None
+
+    def test_failed_when_llm_unavailable(self):
+        memory = _memory_with_embeddings([], llm_raises=TimeoutError("timeout"))
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refresh_topic(memory, {"memory_ids": ["m1"]})
+
+        assert out["status"] == "failed"
+        assert out["topic"] is None
+
+
+class TestRefreshTopicScript:
+    """The one-shot backfill for candidates whose topic predates the fix."""
+
+    def _config(self, tmp_path, monkeypatch):
+        config = {
+            "vector_store": {"provider": "pgvector", "config": {}},
+            "llm": {"provider": "openai", "config": {}},
+            "embedder": {"provider": "openai", "config": {}},
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setenv("MEM0_CONFIG_PATH", str(config_path))
+
+    def _memory(self, mocker, topic="完整的新标题"):
+        memory = MagicMock()
+        memory.vector_store.get.side_effect = lambda mid: SimpleNamespace(
+            payload={"data": f"碎记忆{mid}", "user_id": "u1"}
+        )
+        memory.llm.generate_response.return_value = json.dumps(
+            {"topic": topic, "summary": ["摘要"]}, ensure_ascii=False
+        )
+        mocker.patch("mem0.Memory.from_config", return_value=memory)
+        return memory
+
+    def _db(self, mocker, rows):
+        import refresh_refine_topics
+
+        db = MagicMock()
+        db.execute.return_value.scalars.return_value.all.return_value = rows
+        db_ctx = MagicMock()
+        db_ctx.__enter__.return_value = db
+        db_ctx.__exit__.return_value = False
+        mocker.patch.object(refresh_refine_topics, "SessionLocal", return_value=db_ctx)
+        return db
+
+    def _row(self, topic="RustDesk 登录态 secure_"):
+        row = SimpleNamespace(
+            id=52, topic=topic, memory_ids=["m1", "m2", "m3"], status="proposed"
+        )
+        return row
+
+    def test_backfills_existing_topic_and_never_touches_memories(
+        self, mocker, tmp_path, monkeypatch
+    ):
+        import refresh_refine_topics
+
+        self._config(tmp_path, monkeypatch)
+        memory = self._memory(mocker, topic="RustDesk 登录态 secure_tcp 死锁根因与解决方案")
+        row = self._row()
+        db = self._db(mocker, [row])
+
+        rc = refresh_refine_topics.main()
+
+        assert rc == 0
+        assert row.topic == "RustDesk 登录态 secure_tcp 死锁根因与解决方案"
+        db.commit.assert_called()
+        memory.add.assert_not_called()
+        memory.vector_store.insert.assert_not_called()
+
+    def test_dry_run_reports_without_writing(self, mocker, tmp_path, monkeypatch):
+        import refresh_refine_topics
+
+        self._config(tmp_path, monkeypatch)
+        self._memory(mocker)
+        row = self._row()
+        db = self._db(mocker, [row])
+        monkeypatch.setenv("REFRESH_TOPIC_DRY_RUN", "true")
+
+        rc = refresh_refine_topics.main()
+
+        assert rc == 0
+        assert row.topic == "RustDesk 登录态 secure_"
+        db.commit.assert_not_called()
+
+    def test_llm_failure_leaves_topic_untouched_and_continues(
+        self, mocker, tmp_path, monkeypatch
+    ):
+        import refresh_refine_topics
+
+        self._config(tmp_path, monkeypatch)
+        memory = MagicMock()
+        memory.vector_store.get.side_effect = lambda mid: SimpleNamespace(
+            payload={"data": f"碎记忆{mid}", "user_id": "u1"}
+        )
+        memory.llm.generate_response.side_effect = TimeoutError("timeout")
+        mocker.patch("mem0.Memory.from_config", return_value=memory)
+        row = self._row()
+        db = self._db(mocker, [row])
+
+        rc = refresh_refine_topics.main()
+
+        assert rc == 0
+        assert row.topic == "RustDesk 登录态 secure_"
 
 
 class TestRefineCronScript:
