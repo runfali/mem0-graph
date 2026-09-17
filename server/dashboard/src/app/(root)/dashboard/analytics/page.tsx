@@ -38,6 +38,12 @@ import {
 import { DataTable } from "@/components/shared/data-table";
 import { TableSkeleton } from "@/components/shared/table-skeleton";
 import { getErrorMessage } from "@/lib/error-message";
+import {
+  pageSelectAll,
+  pruneToAvailable,
+  selectAllKeys,
+  summarizeSelection,
+} from "@/lib/table-selection";
 import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/utils/api";
 import {
@@ -671,6 +677,24 @@ export default function AnalyticsPage() {
   );
   const [staleBatchDeleteOpen, setStaleBatchDeleteOpen] = useState(false);
   const [staleBatchBusy, setStaleBatchBusy] = useState(false);
+  // DataTable 分页是内部态，靠回调上报当前页 key 才能实现「本页全选」
+  const [staleVisibleKeys, setStaleVisibleKeys] = useState<string[]>([]);
+
+  // 记忆精炼候选：与闲置记忆同一套选择交互
+  const [refineSelectedIds, setRefineSelectedIds] = useState<Set<number>>(
+    new Set(),
+  );
+  const [refineVisibleKeys, setRefineVisibleKeys] = useState<number[]>([]);
+  const [refineBatchBusy, setRefineBatchBusy] = useState(false);
+  const [refineBatchApplyOpen, setRefineBatchApplyOpen] = useState(false);
+  const [refineBatchDeleteOpen, setRefineBatchDeleteOpen] = useState(false);
+
+  // DataTable 上报的 key 是 string | number（组件对任意行都通用），这里按各自
+  // 的行 key 类型窄化后落库
+  const handleStaleVisibleKeys = (keys: Array<string | number>) =>
+    setStaleVisibleKeys(keys.map(String));
+  const handleRefineVisibleKeys = (keys: Array<string | number>) =>
+    setRefineVisibleKeys(keys.map(Number));
 
   const {
     data: report = EMPTY_REPORT,
@@ -735,6 +759,12 @@ export default function AnalyticsPage() {
       errorToast: "加载精炼数据失败",
       initialData: { candidates: [], history: [] },
     },
+  );
+
+  // 上移：下面的批量选择逻辑与批量栏都用到候选清单，留在原处会触发
+  // 「used before declaration」TDZ（同审计修复 80da27c 的同类坑）
+  const candidateRows = refineData.candidates.filter(
+    (c) => c.status === "proposed" || c.status === "failed",
   );
 
   const [detailCand, setDetailCand] = useState<RefineCandidate | null>(null);
@@ -802,6 +832,110 @@ export default function AnalyticsPage() {
     }
   };
 
+  const refineAllKeys = candidateRows.map((c) => c.id);
+  const refineEffectiveIds = pruneToAvailable(refineSelectedIds, refineAllKeys);
+  const refineSel = summarizeSelection(
+    refineVisibleKeys,
+    refineAllKeys,
+    refineSelectedIds,
+  );
+  // 已选但当前不在候选清单（如刚被应用后 status 变了）的会被 prune 掉，
+  // 批量接口只作用于仍可见为候选的行
+  const refineSelectedRows = candidateRows.filter((c) =>
+    refineSelectedIds.has(c.id),
+  );
+
+  const toggleRefineSelect = (id: number, checked: boolean) => {
+    setRefineSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleRefineVisiblePage = () => {
+    setRefineSelectedIds((prev) =>
+      pageSelectAll(refineVisibleKeys, prev, !refineSel.headerChecked),
+    );
+  };
+
+  const selectAllRefine = () => {
+    setRefineSelectedIds(
+      refineSel.allSelected ? new Set() : selectAllKeys(refineAllKeys),
+    );
+  };
+
+  const failLabel = (id: number, err: unknown) =>
+    `#${id} ${getErrorMessage(err)}`;
+
+  // 批量应用：沿用单条 /apply 契约（后端无批量端点），逐条串行。
+  // 后端的软标记与写入都在服务端处理，串行比并发更好定位失败项。
+  const handleRefineBatchApply = async () => {
+    const rows = refineSelectedRows;
+    setRefineBatchBusy(true);
+    try {
+      let ok = 0;
+      const failed: string[] = [];
+      for (const row of rows) {
+        try {
+          await api.post(REFINE_ENDPOINTS.APPLY, { candidate_id: row.id });
+          ok += 1;
+        } catch (err) {
+          failed.push(failLabel(row.id, err));
+        }
+      }
+      setRefineSelectedIds(new Set());
+      setRefineBatchApplyOpen(false);
+      void refetchRefine();
+      if (failed.length === 0) {
+        toast({ title: `已应用 ${ok} 个候选`, variant: "success" });
+      } else {
+        toast({
+          title: `已应用 ${ok} 个，${failed.length} 个失败`,
+          description: failed.slice(0, 3).join("；"),
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setRefineBatchBusy(false);
+    }
+  };
+
+  const handleRefineBatchDelete = async () => {
+    const rows = refineSelectedRows;
+    setRefineBatchBusy(true);
+    try {
+      let ok = 0;
+      const failed: string[] = [];
+      for (const row of rows) {
+        try {
+          await api.post(REFINE_ENDPOINTS.DELETE, {
+            candidate_id: row.id,
+            with_memories: false,
+          });
+          ok += 1;
+        } catch (err) {
+          failed.push(failLabel(row.id, err));
+        }
+      }
+      setRefineSelectedIds(new Set());
+      setRefineBatchDeleteOpen(false);
+      void refetchRefine();
+      if (failed.length === 0) {
+        toast({ title: `已删除 ${ok} 个候选记录`, variant: "success" });
+      } else {
+        toast({
+          title: `已删除 ${ok} 个，${failed.length} 个失败`,
+          description: failed.slice(0, 3).join("；"),
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setRefineBatchBusy(false);
+    }
+  };
+
   const handleDeleteCandidate = async (
     candidate: RefineCandidate,
     withMemories: boolean,
@@ -862,31 +996,34 @@ export default function AnalyticsPage() {
 
   // 批量删除只作用于仍在当前闲置清单里的 id：refetch 后已被保留/清理的
   // 记忆不再进清单，残留选择不能连带误删
-  const staleEffectiveIds = staleByRecency
-    .filter((m) => staleSelectedIds.has(m.memory_id))
-    .map((m) => m.memory_id);
-  // 闲置记忆批量选择：全选=整个闲置清单（跨页）。DataTable 分页是内部态，
-  // 父组件拿不到当前页——按页全选会在第 2 页起与可见行错位，故取全清单语义，
-  // 范围由批量栏「已选 N 条」明示
-  const staleAllSelected =
-    staleByRecency.length > 0 &&
-    staleEffectiveIds.length === staleByRecency.length;
-  const staleSomeSelected = staleEffectiveIds.length > 0 && !staleAllSelected;
+  const staleAllKeys = staleByRecency.map((m) => m.memory_id);
+  const staleEffectiveIds = pruneToAvailable(staleSelectedIds, staleAllKeys);
+  // 表头 = 本页全选（只看当前可见页），「选择全部」= 整个清单，二者分开后
+  // 不再有「勾了表头却选了看不见的行」的错位
+  const staleSel = summarizeSelection(
+    staleVisibleKeys,
+    staleAllKeys,
+    staleSelectedIds,
+  );
 
-  const toggleStaleSelect = (id: string) => {
+  const toggleStaleSelect = (id: string, checked: boolean) => {
     setStaleSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (checked) next.add(id);
+      else next.delete(id);
       return next;
     });
   };
 
-  const toggleStaleSelectAll = () => {
+  const toggleStaleVisiblePage = () => {
+    setStaleSelectedIds((prev) =>
+      pageSelectAll(staleVisibleKeys, prev, !staleSel.headerChecked),
+    );
+  };
+
+  const selectAllStale = () => {
     setStaleSelectedIds(
-      staleAllSelected
-        ? new Set()
-        : new Set(staleByRecency.map((m) => m.memory_id)),
+      staleSel.allSelected ? new Set() : selectAllKeys(staleAllKeys),
     );
   };
 
@@ -1042,7 +1179,9 @@ export default function AnalyticsPage() {
         <div className="flex items-center">
           <Checkbox
             checked={staleSelectedIds.has(row.memory_id)}
-            onCheckedChange={() => toggleStaleSelect(row.memory_id)}
+            onCheckedChange={(checked) =>
+              toggleStaleSelect(row.memory_id, checked === true)
+            }
           />
         </div>
       ),
@@ -1102,10 +1241,6 @@ export default function AnalyticsPage() {
     },
   ];
 
-  const candidateRows = refineData.candidates.filter(
-    (c) => c.status === "proposed" || c.status === "failed",
-  );
-
   const refineTitleCell = (row: RefineCandidate) => (
     <button
       type="button"
@@ -1123,6 +1258,24 @@ export default function AnalyticsPage() {
   );
 
   const refineCandidateColumns = [
+    {
+      key: "id" as const,
+      label: "",
+      width: 40,
+      headerVariant: "check" as const,
+      cellVariant: "flush" as const,
+      className: "px-4 py-2.5 align-middle",
+      render: (_: number, row: RefineCandidate) => (
+        <div className="flex items-center">
+          <Checkbox
+            checked={refineSelectedIds.has(row.id)}
+            onCheckedChange={(checked) =>
+              toggleRefineSelect(row.id, checked === true)
+            }
+          />
+        </div>
+      ),
+    },
     {
       key: "topic" as const,
       label: "候选",
@@ -1443,12 +1596,29 @@ export default function AnalyticsPage() {
                   生成精炼候选
                 </Button>
               </div>
-              {staleEffectiveIds.length > 0 && (
+              {/* 批量栏常显：否则空选状态下「选择全部」按钮不可达，只能先点表头 */}
+              {staleAllKeys.length > 0 && (
                 <div className="mb-3 flex items-center justify-between rounded-lg border border-memBorder-primary bg-surface-default-tertiary px-4 py-2.5">
                   <span className="text-sm text-onSurface-default-primary">
                     已选 {staleEffectiveIds.length} 条
                   </span>
                   <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={toggleStaleVisiblePage}
+                    >
+                      {staleSel.headerChecked ? "取消本页" : "选择本页"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={selectAllStale}
+                    >
+                      {staleSel.allSelected
+                        ? "取消全部"
+                        : `选择全部（${staleAllKeys.length} 条）`}
+                    </Button>
                     <Button
                       variant="outline"
                       size="xs"
@@ -1459,6 +1629,7 @@ export default function AnalyticsPage() {
                     <Button
                       variant="destructive"
                       size="xs"
+                      disabled={staleEffectiveIds.length === 0}
                       onClick={() => setStaleBatchDeleteOpen(true)}
                     >
                       <Trash2 className="size-3.5 mr-1" />
@@ -1473,10 +1644,11 @@ export default function AnalyticsPage() {
                   columns={idleColumns}
                   getRowKey={(row) => row.memory_id}
                   pagination={{ pageSize: 10 }}
+                  onVisibleKeysChange={handleStaleVisibleKeys}
                   selectAll={{
-                    checked: staleAllSelected,
-                    indeterminate: staleSomeSelected,
-                    onSelectAll: toggleStaleSelectAll,
+                    checked: staleSel.headerChecked,
+                    indeterminate: staleSel.headerIndeterminate,
+                    onSelectAll: toggleStaleVisiblePage,
                   }}
                 />
               ) : (
@@ -1502,12 +1674,67 @@ export default function AnalyticsPage() {
             description="碎片化记忆经 LLM 压缩为高层抽象建议稿；确认应用后写入记忆库并软标记原记忆，可回滚。"
           >
             <Section title="候选（建议稿）">
+              {/* 批量栏常显：否则空选状态下「选择全部」按钮不可达 */}
+              {refineAllKeys.length > 0 && (
+                <div className="mb-3 flex items-center justify-between rounded-lg border border-memBorder-primary bg-surface-default-tertiary px-4 py-2.5">
+                  <span className="text-sm text-onSurface-default-primary">
+                    已选 {refineEffectiveIds.length} 个候选
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={toggleRefineVisiblePage}
+                    >
+                      {refineSel.headerChecked ? "取消本页" : "选择本页"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={selectAllRefine}
+                    >
+                      {refineSel.allSelected
+                        ? "取消全部"
+                        : `选择全部（${refineAllKeys.length} 条）`}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      onClick={() => setRefineSelectedIds(new Set())}
+                    >
+                      清空选择
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="xs"
+                      disabled={refineEffectiveIds.length === 0}
+                      onClick={() => setRefineBatchDeleteOpen(true)}
+                    >
+                      <Trash2 className="size-3.5 mr-1" />
+                      批量删除
+                    </Button>
+                    <Button
+                      size="xs"
+                      disabled={refineEffectiveIds.length === 0}
+                      onClick={() => setRefineBatchApplyOpen(true)}
+                    >
+                      批量应用
+                    </Button>
+                  </div>
+                </div>
+              )}
               {candidateRows.length > 0 ? (
                 <DataTable
                   data={candidateRows}
                   columns={refineCandidateColumns}
                   getRowKey={(row) => row.id}
                   pagination={{ pageSize: 10 }}
+                  onVisibleKeysChange={handleRefineVisibleKeys}
+                  selectAll={{
+                    checked: refineSel.headerChecked,
+                    indeterminate: refineSel.headerIndeterminate,
+                    onSelectAll: toggleRefineVisiblePage,
+                  }}
                 />
               ) : (
                 <NoData text="暂无精炼候选。可在上方未召回清单点击「生成精炼候选」" />
@@ -1575,6 +1802,65 @@ export default function AnalyticsPage() {
           void handleDeleteCandidate(c, withMemories);
         }}
       />
+
+      <AlertDialog
+        open={refineBatchApplyOpen}
+        onOpenChange={setRefineBatchApplyOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量应用精炼候选</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定应用选中的 {refineEffectiveIds.length}{" "}
+              个候选？将把建议稿写入记忆库，并把对应原记忆标记为已精炼（可在历史中回滚）。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={refineBatchBusy}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={refineBatchBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleRefineBatchApply();
+              }}
+            >
+              {refineBatchBusy ? "应用中..." : "确认应用"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={refineBatchDeleteOpen}
+        onOpenChange={setRefineBatchDeleteOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除精炼候选</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除选中的 {refineEffectiveIds.length}{" "}
+              个候选记录？仅删除候选记录，不影响记忆本身；已应用的候选会被保留为历史记录。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={refineBatchBusy}>
+              取消
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={refineBatchBusy}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleRefineBatchDelete();
+              }}
+            >
+              {refineBatchBusy ? "删除中..." : "确认删除"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={staleBatchDeleteOpen}

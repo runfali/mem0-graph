@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { LucideIcon } from "lucide-react";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,12 @@ interface DataTableProps<T> {
     indeterminate: boolean;
     onSelectAll: () => void;
   };
+  /**
+   * 上报「当前可见页」的行 key（分页/排序变化时同步）。批量选择需要
+   * 「本页全选」就必须知道当前页是哪几行，而分页是组件内部态，父组件
+   * 拿不到——由组件主动回调。不传则无任何行为变化。
+   */
+  onVisibleKeysChange?: (keys: Array<string | number>) => void;
   /**
    * 内置分页（客户端）：true = 每页 10 条；对象可自定义 pageSize。
    * 数据请传入已按期望顺序（如最新在前）排列的数组，第一页即其前 N 条。
@@ -85,6 +91,7 @@ export function DataTable<T>({
   onRowClick,
   getRowClassName,
   selectAll,
+  onVisibleKeysChange,
   pagination,
   sort: controlledSort,
   onSortChange,
@@ -114,7 +121,9 @@ export function DataTable<T>({
     const column = columns.find((c) => c.key === sortState.key);
     if (!column?.sortable) return data;
     const valueOf = (row: T): string | number =>
-      column.sortValue ? column.sortValue(row) : (row[sortState.key] as string | number);
+      column.sortValue
+        ? column.sortValue(row)
+        : (row[sortState.key] as string | number);
     const copy = [...data];
     copy.sort((a, b) => {
       const va = valueOf(a);
@@ -134,10 +143,25 @@ export function DataTable<T>({
     ? sortedData.slice(page * pageSize, (page + 1) * pageSize)
     : sortedData;
 
+  // 上报当前页 key。回调与 getRowKey 都放进 ref：二者在父组件里通常是内联
+  // 箭头函数、每次渲染身份都变，若进依赖数组会与父组件的 setState 形成
+  // 「渲染→上报→setState→渲染」死循环。依赖只留可见集本身。
+  const notifyRef = useRef(onVisibleKeysChange);
+  notifyRef.current = onVisibleKeysChange;
+  const getRowKeyRef = useRef(getRowKey);
+  getRowKeyRef.current = getRowKey;
+  const visibleKeyList = visibleData.map((row, i) =>
+    getRowKeyRef.current ? getRowKeyRef.current(row, i) : i,
+  );
+  const visibleKeys = visibleKeyList.join("\u0000");
+  useEffect(() => {
+    const notify = notifyRef.current;
+    if (!notify) return;
+    notify(visibleKeys === "" ? [] : visibleKeys.split("\u0000"));
+  }, [visibleKeys]);
+
   const minHeight =
-    visibleData.length > 0
-      ? Math.max(76, 38 + visibleData.length * 38)
-      : 100;
+    visibleData.length > 0 ? Math.max(76, 38 + visibleData.length * 38) : 100;
   // Proportional column widths so table fits container (width numbers treated as relative weights)
   const totalWeight = columns.reduce(
     (sum, col) => sum + (typeof col.width === "number" ? col.width : 100),
