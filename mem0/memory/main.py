@@ -93,6 +93,28 @@ _SEARCH_DEPTH_CACHE_MAX = 512
 # Initialize logger early for util functions
 logger = logging.getLogger(__name__)
 
+# 已被精炼的原记忆（refine apply 打的软标记 payload["superseded_by"]）不参与召回：
+# 它们的内容已被精炼产物覆盖，同时返回会让同一事实出现两遍、并挤占 top_k 与
+# rerank 名额。默认开启；排查时可用 MEM0_FILTER_SUPERSEDED=false 一键退回。
+SUPERSEDED_FILTER_ENV = "MEM0_FILTER_SUPERSEDED"
+
+
+def _filter_superseded_enabled() -> bool:
+    """过滤开关（每条召回结果都读 env，便于运行时开关而不需重启）。"""
+    return os.environ.get(SUPERSEDED_FILTER_ENV, "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _is_superseded_payload(payload: dict) -> bool:
+    """空串/None 一律视为未精炼，避免把标记为空的记忆误杀。"""
+    if not _filter_superseded_enabled():
+        return False
+    return bool(payload.get("superseded_by"))
+
 
 def _vector_store_list_rows(listed):
     if isinstance(listed, (list, tuple)) and listed and isinstance(listed[0], list):
@@ -2657,6 +2679,10 @@ class Memory(MemoryBase):
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
                 continue
+            # 已精炼的原记忆在建候选集时就剔除：不能只在格式化时过滤，
+            # 否则它们仍参与打分并占用 score_and_rank 的 top_k 名额
+            if _is_superseded_payload(payload):
+                continue
             mem_id = str(mem.id)
             candidates.append({
                 "id": mem_id,
@@ -2752,6 +2778,10 @@ class Memory(MemoryBase):
 
             if not payload.get("data"):
                 continue  # Skip candidates with no payload data
+
+            # 已精炼的原记忆退出召回（在 rerank/截断之前，不占名额）
+            if _is_superseded_payload(payload):
+                continue
 
             memory_item_dict = MemoryItem(
                 id=scored["id"],
@@ -5039,6 +5069,10 @@ class AsyncMemory(MemoryBase):
             payload = mem.payload if hasattr(mem, 'payload') else {}
             if not show_expired and _payload_is_expired(payload):
                 continue
+            # 已精炼的原记忆在建候选集时就剔除：不能只在格式化时过滤，
+            # 否则它们仍参与打分并占用 score_and_rank 的 top_k 名额
+            if _is_superseded_payload(payload):
+                continue
             mem_id = str(mem.id)
             candidates.append({
                 "id": mem_id,
@@ -5132,6 +5166,10 @@ class AsyncMemory(MemoryBase):
         for scored in scored_results:
             payload = scored.get("payload") or {}
             if not payload.get("data"):
+                continue
+
+            # 已精炼的原记忆退出召回（在 rerank/截断之前，不占名额）
+            if _is_superseded_payload(payload):
                 continue
 
             memory_item_dict = MemoryItem(
