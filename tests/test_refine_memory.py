@@ -181,10 +181,35 @@ class TestRefineGroup:
         assert out["status"] == "proposed"
         assert len(out["topic"]) == refine_memory.MAX_TOPIC_CHARS
 
+    def test_safety_cap_is_loose_enough_for_real_titles(self):
+        # Measured against production groups: real titles run up to ~65 chars.
+        # A cap that clips them re-creates the truncation bug at lower
+        # frequency, so the guard must sit well above the prompt's own bound.
+        assert refine_memory.MAX_TOPIC_CHARS >= 120
+
+    def test_real_world_title_is_not_clamped(self):
+        # Production candidate #39 produced exactly this title (68 chars); the
+        # 60-char guard silently clipped it to 60 mid-word.
+        topic = "TencentDB-Agent-Memory 的 dsh 集成路线与我方进程内双缝方案的对比及 2026-08-30 用户敲定的选型结论"
+        assert len(topic) == 68  # the old 60-char guard clipped this
+        memory = _memory_with_embeddings(
+            [],
+            llm_return=json.dumps({"topic": topic, "summary": ["抽象"]}, ensure_ascii=False),
+        )
+        memory.vector_store.get.return_value = SimpleNamespace(payload={"data": "碎记忆"})
+
+        out = refine_memory.refine_group(memory, {"memory_ids": ["m1", "m2", "m3"]})
+
+        assert out["status"] == "proposed"
+        assert out["topic"] == topic
+
     def test_prompt_asks_for_a_full_sentence_title(self):
         # The 20-char instruction is what made the model emit titles that read
-        # like cut-off sentences; it must ask for a complete one-line title.
-        assert "20" not in refine_memory.REFINE_SYSTEM_PROMPT
+        # like cut-off sentences; it must ask for a complete one-line title
+        # while still giving the model a bound to self-limit against.
+        prompt = refine_memory.REFINE_SYSTEM_PROMPT
+        assert "不要中途截断" in prompt
+        assert "20字" not in prompt
 
     def test_invalid_json_fails_gracefully(self):
         memory = _memory_with_embeddings([], llm_return="这不是JSON")

@@ -19,14 +19,18 @@ logger = logging.getLogger(__name__)
 SIMILARITY_THRESHOLD = 0.75
 MIN_GROUP_SIZE = 3
 MAX_SUMMARY_COUNT = 3
-# Safety cap only: a runaway generation guard, not a display limit. The DB
-# column holds 255 chars, so nothing below is clamped in practice.
-MAX_TOPIC_CHARS = 60
+# Safety cap only: a runaway generation guard, not a display limit. Measured
+# over 39 production groups, real titles run up to ~65 chars, so the guard is
+# set well above that — a tighter cap silently re-introduces the truncation
+# bug at lower frequency. The DB column holds 255 chars.
+MAX_TOPIC_CHARS = 120
+TOPIC_PROMPT_BOUND = 50  # what the model is told to aim for
 
 REFINE_SYSTEM_PROMPT = (
     "你是记忆精炼器。把以下 N 条碎记忆合并为 1-3 条高层抽象事实。"
     "要求：保留关键主体、时间、数字、关系；去掉过程细节与重复；每条自包含；"
-    '只输出 JSON {"topic": "一句话短标题，写完整、不要中途截断", "summary": ["...", "..."]}。'
+    '只输出 JSON {"topic": "一句话短标题（不超过50字），写完整、不要中途截断", '
+    '"summary": ["...", "..."]}。'
 )
 
 
