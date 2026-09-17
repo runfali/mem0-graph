@@ -15,20 +15,24 @@ server/data/
 *.so
 
 # Distribution / packaging
+# 注意：这些是「项目根」的打包产物目录，必须带前导斜杠锚定。
+# 不带斜杠的 lib/ 会匹配任意层级，误伤 server/dashboard/src/lib（被应用
+# 广泛 import 的源码目录）与 plugins/dsh-mem0-plugins/lib（插件产物）。
+# 2026-09-17 修正（此前两处都靠 git add -f 绕过）。
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
+/sdist/
+/var/
+/wheels/
+/share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
